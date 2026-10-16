@@ -112,8 +112,8 @@ export function ArtistDetailsLibraryAlbums({
       title: "Show incomplete downloads",
       renderIcon: () => (
         <span className="artist-status-icon-pair">
-          <span className="artist-status-dot artist-status-dot--incomplete" />
           <span className="artist-status-dot" />
+          <span className="artist-status-dot artist-status-dot--incomplete" />
         </span>
       ),
     },
