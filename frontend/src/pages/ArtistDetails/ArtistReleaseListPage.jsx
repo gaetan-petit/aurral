@@ -19,7 +19,7 @@ import { ReleaseMetric } from "./components/ReleaseMetric";
 import AddActionButton from "../../components/AddActionButton";
 import { useActiveDownloads } from "../../hooks/useActiveDownloads";
 import PillToggle from "../../components/PillToggle";
-import SearchLibraryCheck from "../../components/SearchLibraryCheck";
+import ReleaseStatusCheck from "./components/ReleaseStatusCheck";
 import { useAuth } from "../../contexts/AuthContext";
 import { useToast } from "../../contexts/ToastContext";
 import { useDocumentTitle } from "../../hooks/useDocumentTitle";
@@ -452,12 +452,7 @@ function ArtistReleaseListPage({ mode = "releases" }) {
               </Tooltip>
             )}
             {isComplete ? (
-              <Tooltip content="Complete">
-                <span className="artist-release-card__status" >
-                  <SearchLibraryCheck size="overlay" />
-                  <span className="sr-only">Complete</span>
-                </span>
-              </Tooltip>
+              <ReleaseStatusCheck partial={status?.partial} />
             ) : canAddAlbum ? (
               <div>
                 <AddActionButton
@@ -491,12 +486,7 @@ function ArtistReleaseListPage({ mode = "releases" }) {
           )}
           <div className="artist-release-card__action">
             {isComplete ? (
-              <Tooltip content="Complete">
-                <span className="artist-release-card__status" >
-                  <SearchLibraryCheck size="overlay" />
-                  <span className="sr-only">Complete</span>
-                </span>
-              </Tooltip>
+              <ReleaseStatusCheck partial={status?.partial} />
             ) : canAddAlbum ? (
               <div>
                 <AddActionButton

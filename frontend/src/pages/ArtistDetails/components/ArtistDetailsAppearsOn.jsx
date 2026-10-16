@@ -3,7 +3,7 @@ import { useEffect, useMemo } from "react";
 import { ArrowRight, Music } from "lucide-react";
 import { ReleaseMetric } from "./ReleaseMetric";
 import { DotLoader } from "../../../components/DotLoader";
-import SearchLibraryCheck from "../../../components/SearchLibraryCheck";
+import ReleaseStatusCheck from "./ReleaseStatusCheck";
 import AddActionButton from "../../../components/AddActionButton";
 import { useActiveDownloads } from "../../../hooks/useActiveDownloads";
 import { getReleaseGroupLink } from "../../../utils/searchNavigation";
@@ -98,12 +98,7 @@ export function ArtistDetailsAppearsOn({
                 )}
                 <div className="artist-release-card__action">
                   {status?.status === "available" || status?.status === "added" ? (
-                    <Tooltip content="Complete">
-                      <span className="artist-release-card__status" >
-                        <SearchLibraryCheck size="overlay" />
-                        <span className="sr-only">Complete</span>
-                      </span>
-                    </Tooltip>
+                    <ReleaseStatusCheck partial={status?.partial} />
                   ) : canAddAlbum ? (
                     <div>
                       <AddActionButton

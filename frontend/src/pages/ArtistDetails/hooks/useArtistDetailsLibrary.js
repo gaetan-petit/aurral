@@ -773,6 +773,7 @@ export function useArtistDetailsLibrary({
       return {
         status: "available",
         label: "Complete",
+        partial: (album.statistics?.percentOfTracks ?? 0) < 100,
         libraryId: album.id,
         albumInfo: album,
       };

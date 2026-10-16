@@ -4648,6 +4648,10 @@ textarea {
   color: var(--aurral-success);
 }
 
+.library-check--partial {
+  color: var(--aurral-warning);
+}
+
 .library-check--sm {
   width: 1rem;
   height: 1rem;
