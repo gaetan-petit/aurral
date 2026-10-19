@@ -2340,7 +2340,10 @@ function LibraryPage() {
     const aurralState = album.managedBy === "aurral"
       ? describeAurralAlbumStatus(aurralAlbumStatuses[aurralAlbumStatusKey(album.id)] || {})
       : null;
-    const cardStatus = aurralState?.status === "complete" ? null : aurralState;
+    // The yellow track count already shows a partial album, so the label would only crowd it out.
+    const cardStatus = aurralState?.status === "complete" || aurralState?.status === "partial"
+      ? null
+      : aurralState;
     const albumLinkState = {
       seed: {
         title: album.title || "",
@@ -2437,7 +2440,15 @@ function LibraryPage() {
                 {cardStatus.label + " · "}
               </span>
             )}
-            {meta}
+            {meta.details && meta.details + " · "}
+            {meta.partial ? (
+              <span className="native-library-card__status" data-tone="warning">
+                {meta.count}
+                <span className="sr-only"> available</span>
+              </span>
+            ) : (
+              meta.count
+            )}
           </span>
         </div>
       </article>
