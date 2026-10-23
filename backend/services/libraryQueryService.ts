@@ -1743,6 +1743,8 @@ const recentMediaOrder = (
   const orderDirection = direction === "desc" ? "ASC" : "DESC";
   const mediaFilter = recentMediaFilter(sourceFilter, availableOnly);
   if (kind === "artists") {
+    // An artist with no music yet, like one Aurral just started monitoring,
+    // was added when the artist was.
     return `COALESCE((
       SELECT MAX(page_media.created_at)
       FROM library_albums AS page_album
@@ -1751,7 +1753,7 @@ const recentMediaOrder = (
         ON page_media.track_id = page_album_track.track_id
       WHERE page_album.artist_id = artist.id
         AND ${albumMediaCondition("page_media", "page_album_track")}${mediaFilter}
-    ), 0) ${orderDirection}, artist.name COLLATE NOCASE ${direction === "desc" ? "DESC" : "ASC"}`;
+    ), artist.created_at, 0) ${orderDirection}, artist.name COLLATE NOCASE ${direction === "desc" ? "DESC" : "ASC"}`;
   }
   if (kind === "albums") {
     return `COALESCE((
@@ -1770,8 +1772,24 @@ const recentMediaOrder = (
   ), 0) ${orderDirection}, track.title COLLATE NOCASE ${direction === "desc" ? "DESC" : "ASC"}`;
 };
 
-// The Library shows what can be played, and the albums Aurral is fetching.
+// The Library shows what can be played, the albums Aurral is fetching, and
+// the artists Aurral monitors, even before any of their music arrives.
 export const LIBRARY_VIEW = "library";
+
+const aurralMonitoredArtist = (alias: string) => `EXISTS (
+  SELECT 1 FROM library_management AS artist_management
+  WHERE artist_management.entity_kind = 'artist'
+    AND artist_management.entity_id = ${alias}.id
+    AND artist_management.managed_by = 'aurral'
+    AND artist_management.monitor_rules IS NOT NULL
+)`;
+
+// Artists shown in the Library, given that their shown albums are joined as
+// `album`, or are null when none are.
+const shownArtist = (sourceFilter: string | null) =>
+  sourceFilter
+    ? "album.id IS NOT NULL"
+    : `(${aurralMonitoredArtist("artist")} OR album.id IS NOT NULL)`;
 
 const aurralFetching = (alias: string) => `CASE WHEN json_valid(${alias}.metadata_json)
   THEN json_extract(${alias}.metadata_json, '$.librarySource') = 'aurral'
@@ -1796,8 +1814,9 @@ const pageMediaExists = (
     if (kind === "tracks") return pageMediaExists(kind, sourceFilter, true);
     const album = visibleAlbum(sourceFilter);
     if (kind === "albums") return album;
+    const albumExists = `EXISTS (SELECT 1 FROM library_albums AS album WHERE album.artist_id = artist.id AND ${album.sql})`;
     return {
-      sql: `EXISTS (SELECT 1 FROM library_albums AS album WHERE album.artist_id = artist.id AND ${album.sql})`,
+      sql: sourceFilter ? albumExists : `(${aurralMonitoredArtist("artist")} OR ${albumExists})`,
       parameters: album.parameters,
     };
   }
@@ -1968,9 +1987,9 @@ export function getLibraryArtistPage({
   const shownAlbums = availableOnly === LIBRARY_VIEW ? visibleAlbum(sourceFilter) : null;
   if (!includeStats) {
     const filterAlbums = Boolean(sourceFilter) || availableOnly === true || Boolean(shownAlbums);
-    const albumJoin = filterAlbums ? "JOIN" : "LEFT JOIN";
+    const albumJoin = filterAlbums && !shownAlbums ? "JOIN" : "LEFT JOIN";
     const albumFilter = shownAlbums
-      ? `AND ${shownAlbums.sql}`
+      ? `AND ${shownArtist(sourceFilter)}`
       : filterAlbums
         ? `AND EXISTS (
           SELECT 1
@@ -1995,11 +2014,16 @@ export function getLibraryArtistPage({
          COUNT(DISTINCT album.id) AS album_count
        FROM library_artists AS artist
        ${albumJoin} library_albums AS album ON album.artist_id = artist.id
+         ${shownAlbums ? `AND ${shownAlbums.sql}` : ""}
        WHERE artist.id IN (${ids.map(() => "?").join(",")})
          ${albumFilter}
        GROUP BY artist.id`,
       )
-      .all(...ids, ...(shownAlbums ? shownAlbums.parameters : sourceFilter ? [sourceFilter] : []));
+      .all(
+        ...(shownAlbums?.parameters || []),
+        ...ids,
+        ...(!shownAlbums && sourceFilter ? [sourceFilter] : []),
+      );
     const byId = new Map(
       rows.map((row) => {
         const metadata = parseJson<StoredLibraryMetadata>(row.artist_metadata_json);
@@ -2035,7 +2059,7 @@ export function getLibraryArtistPage({
     };
   }
 
-  const aggregateParameters = [];
+  const aggregateParameters: unknown[] = [...(shownAlbums?.parameters || [])];
   const mediaConditions = [
     "media.track_id = album_track.track_id",
     albumMediaCondition("media", "album_track"),
@@ -2046,7 +2070,14 @@ export function getLibraryArtistPage({
   }
   if (availableOnly === true) mediaConditions.push("media.available = 1");
   const mediaJoin = sourceFilter || availableOnly === true ? "JOIN" : "LEFT JOIN";
-  aggregateParameters.push(...ids, ...(shownAlbums?.parameters || []));
+  aggregateParameters.push(...ids);
+  // The Library keeps a monitored artist whose albums are not shown yet.
+  const albumJoin = shownAlbums
+    ? `LEFT JOIN (library_albums AS album
+       JOIN library_album_tracks AS album_track ON album_track.album_id = album.id)
+       ON album.artist_id = artist.id AND ${shownAlbums.sql}`
+    : `JOIN library_albums AS album ON album.artist_id = artist.id
+     JOIN library_album_tracks AS album_track ON album_track.album_id = album.id`;
   const rows = db
     .prepare<unknown[], LibraryArtistAggregateRow>(
       `SELECT
@@ -2062,11 +2093,10 @@ export function getLibraryArtistPage({
        GROUP_CONCAT(DISTINCT media.source) AS sources,
        MAX(media.available) AS available
      FROM library_artists AS artist
-     JOIN library_albums AS album ON album.artist_id = artist.id
-     JOIN library_album_tracks AS album_track ON album_track.album_id = album.id
+     ${albumJoin}
      ${mediaJoin} library_media_files AS media ON ${mediaConditions.join(" AND ")}
      WHERE artist.id IN (${ids.map(() => "?").join(",")})
-       ${shownAlbums ? `AND ${shownAlbums.sql}` : ""}
+       ${shownAlbums ? `AND ${shownArtist(sourceFilter)}` : ""}
      GROUP BY artist.id
      ORDER BY coalesce(artist.sort_name, artist.name) COLLATE NOCASE,
        artist.name COLLATE NOCASE`,
