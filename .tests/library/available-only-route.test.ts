@@ -21,6 +21,8 @@ const [isolatedState, { db }, { dbOps }, libraryStore, { setLibraryManagement }]
 
 const { registerLibraryIndex } =
   await import("../../backend/routes/library/handlers/libraryIndex.ts");
+const { getLibrarySearchPage, LIBRARY_VIEW } =
+  await import("../../backend/services/libraryQueryService.ts");
 const {
   linkLibraryAlbumTrack,
   upsertLibraryAlbum,
@@ -37,6 +39,7 @@ function callLibraryPage<Kind extends "artists" | "albums">(query: {
   artistId?: string;
   source?: string;
   availableOnly?: string;
+  sort?: string;
 }) {
   const response = createResponse<Page<Kind>>();
   routes.get("GET /canonical")({ query }, response);
@@ -113,6 +116,28 @@ beforeAll(() => {
     available: false,
   });
 
+  // Artists Aurral monitors stay in the Library before any of their music
+  // arrives. Lidarr's monitored artists and deleted artists, whose monitoring
+  // Aurral cleared, wait for music.
+  for (const [name, managedBy, monitorRules] of [
+    ["Monitored Empty", "aurral", { default: true }],
+    ["Deleted Empty", "aurral", null],
+    ["Lidarr Empty", "lidarr", null],
+  ] as const) {
+    const artist = upsertLibraryArtist({
+      identityKey: `${name}-artist`,
+      name,
+      metadata: { monitored: true, ...(managedBy === "lidarr" && { librarySource: "lidarr" }) },
+    });
+    setLibraryManagement({
+      entityKind: "artist",
+      entityId: artist.id,
+      managedBy,
+      monitorMode: monitorRules ? "all" : "none",
+      monitorRules,
+    });
+  }
+
   const fetchingArtist = upsertLibraryArtist({ identityKey: "fetching-artist", name: "Fetching" });
   for (const [title, monitored] of [
     ["Requested Album", true],
@@ -155,10 +180,11 @@ test("the Library lists what can be played and what Aurral is fetching, with or 
     assert.deepEqual(titles(albums), ["Owned Album", "Requested Album"]);
     assert.equal(albums.total, 2);
     const artists = callLibraryPage({ kind: "artists", page: "1", pageSize: "50" });
-    assert.deepEqual(titles(artists), ["Fetching", "Owns Some"]);
+    assert.deepEqual(titles(artists), ["Fetching", "Monitored Empty", "Owns Some"]);
+    assert.equal(artists.total, 3);
     assert.deepEqual(
       artists.items.map((artist) => ("albumCount" in artist ? artist.albumCount : undefined)),
-      [1, 1],
+      [1, 0, 1],
     );
     const ownsSome = artists.items.find((artist) => artist.name === "Owns Some");
     assert.ok(ownsSome);
@@ -174,6 +200,14 @@ test("the Library lists what can be played and what Aurral is fetching, with or 
       ["Owned Album"],
     );
   }
+});
+
+test("Library search finds artists Aurral monitors before their music arrives", () => {
+  const search = getLibrarySearchPage({ availableOnly: LIBRARY_VIEW, query: "empty" });
+  assert.deepEqual(
+    search.artists.map((artist) => [artist.name, artist.albumCount]),
+    [["Monitored Empty", 0]],
+  );
 });
 
 test("a source filter lists and counts only albums and artists with playable files from that source", () => {
@@ -199,4 +233,25 @@ test("an explicit availableOnly query param overrides the Library's rule", () =>
     availableOnly: "false",
   });
   assert.equal(everything.total, 5);
+  const playableArtists = callLibraryPage({
+    kind: "artists",
+    page: "1",
+    pageSize: "50",
+    availableOnly: "true",
+  });
+  assert.deepEqual(titles(playableArtists), ["Owns Some"]);
+});
+
+test("Recently added ranks an artist with no music yet by when it was added", () => {
+  const { newest } = db
+    .prepare("SELECT MAX(created_at) AS newest FROM library_media_files")
+    .get() as { newest: number };
+  const setAddedAt = db.prepare("UPDATE library_artists SET created_at = ? WHERE name = ?");
+  setAddedAt.run(newest + 60_000, "Monitored Empty");
+  setAddedAt.run(1, "Fetching");
+  const artists = callLibraryPage({ kind: "artists", page: "1", pageSize: "50", sort: "newest" });
+  assert.deepEqual(
+    artists.items.map((artist) => artist.name),
+    ["Monitored Empty", "Owns Some", "Fetching"],
+  );
 });
