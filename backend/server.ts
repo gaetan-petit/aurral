@@ -176,7 +176,6 @@ app.use("/api/auth/oidc/login", authLimiter);
 app.use("/api/auth/oidc/exchange", authLimiter);
 app.use("/api/users/me/password", authLimiter);
 
-app.use(["/api/inbox"], handToHono);
 app.use(
   [
     "/api/library/canonical-stream",
@@ -190,6 +189,7 @@ app.use(
   handToHono,
 );
 app.all(/^\/rest\/stream(?:\.view)?\/?$/i, handToHono);
+app.use(["/api/inbox"], handToHono);
 
 app.use(express.json({ limit: JSON_BODY_LIMIT }));
 app.use("/api/settings", settingsRouter);
