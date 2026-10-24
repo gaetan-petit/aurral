@@ -23,20 +23,18 @@ import {
   startSpotifyOAuth,
 } from "../../../utils/api/endpoints/playlists.ts";
 import { getMyListeningHistory, getScrobbleStatus } from "../../../utils/api/endpoints/auth.ts";
-import { getAppBasePath, normalizeBasePathWithTrailingSlash } from "../../../utils/basePath";
+import {
+  getOAuthCallbackUrl,
+  isSpotifyAuthRequired,
+  openSpotifyOAuthPopup,
+} from "../../../utils/spotifyOAuth.ts";
 import { useAuth } from "../../../contexts/AuthContext";
 import { queryClient, queryKeys } from "../../../queryClient.ts";
 import { parseTracklistImportFile, reserveUniqueName, normalizeNameKey } from "../flowPageUtils";
 import { asApiError, type ApiError } from "../../../utils/api/core.ts";
-import { getApiErrorBody, getApiErrorMessage } from "../../onboardingUtils.tsx";
+import { getApiErrorMessage } from "../../onboardingUtils.tsx";
 import type { ImportedPlaylistPreviewResponse } from "../../../../../backend/routes/playlists/handlers/utils.ts";
 import type { PreviewYoutubeMusicPlaylistResponse } from "../../../../../backend/routes/playlists/handlers/youtubeMusicImport.ts";
-
-declare global {
-  interface Window {
-    onCompleteOauth?: (query: string, onComplete?: () => void) => void;
-  }
-}
 
 type ImportSource = "spotify" | "listenbrainz" | "lastfm" | "youtube" | "json";
 type ImportPlaylist = {
@@ -48,11 +46,6 @@ type ImportPlaylist = {
 type ImportPreviewTrack = ImportedPlaylistPreviewResponse["previewTracks"][number];
 type ImportedFlow = ReturnType<typeof parseTracklistImportFile>[number] & { importName: string };
 type JsonReview = { fileName: string; flows: ImportedFlow[] };
-type SpotifyTokens = {
-  accessToken: string;
-  refreshToken: string;
-  expiresIn: string | number | null | undefined;
-};
 
 const SYNC_INTERVAL_OPTIONS = [
   { value: 0, label: "None" },
@@ -61,9 +54,6 @@ const SYNC_INTERVAL_OPTIONS = [
   { value: 24, label: "Every 24 hours" },
   { value: 72, label: "Every 3 days" },
 ];
-
-const SPOTIFY_OAUTH_BROADCAST_CHANNEL = "aurral-spotify-oauth";
-const SPOTIFY_AUTH_REQUIRED_CODE = "SPOTIFY_AUTH_REQUIRED";
 
 function getPlaylistMeta(playlist: ImportPlaylist) {
   const parts = [playlist?.trackCount != null ? `${playlist.trackCount} tracks` : "Playlist"];
@@ -199,102 +189,7 @@ function PlaylistImportConfig({
   );
 }
 
-type HandoffPayload = {
-  access_token?: string | null;
-  refresh_token?: string | null;
-  expires_in?: string | number | null;
-};
-
-function tokensFromHandoffPayload(
-  payload: HandoffPayload | null | undefined,
-): SpotifyTokens | null {
-  const accessToken = String(payload?.access_token || "").trim();
-  const refreshToken = String(payload?.refresh_token || "").trim();
-  if (!accessToken || !refreshToken) return null;
-  return {
-    accessToken,
-    refreshToken,
-    expiresIn: payload?.expires_in,
-  };
-}
-
-function getOAuthCallbackUrl() {
-  const base = normalizeBasePathWithTrailingSlash(getAppBasePath());
-  return `${window.location.origin}${base}oauth.html`;
-}
-
-function openSpotifyOAuthPopup(oauthUrl: string) {
-  return new Promise<SpotifyTokens>((resolve, reject) => {
-    const popup = window.open(oauthUrl, "spotify-oauth", "width=480,height=720");
-    if (!popup || popup.closed || typeof popup.closed === "undefined") {
-      reject(new Error("Allow popups to connect Spotify."));
-      return;
-    }
-
-    let settled = false;
-    let channel: BroadcastChannel | null | undefined;
-    const cleanup = () => {
-      delete window.onCompleteOauth;
-      if (channel) {
-        channel.close();
-        channel = null;
-      }
-      clearTimeout(timeout);
-    };
-    const finish = (tokens: SpotifyTokens) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      resolve(tokens);
-    };
-    const fail = (message: string) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      reject(new Error(message));
-    };
-
-    try {
-      channel = new BroadcastChannel(SPOTIFY_OAUTH_BROADCAST_CHANNEL);
-      channel.onmessage = (event) => {
-        if (event.data?.type !== "ready") return;
-        const tokens = tokensFromHandoffPayload(event.data?.payload);
-        if (tokens) finish(tokens);
-      };
-    } catch (_) {
-      channel = null;
-    }
-
-    window.onCompleteOauth = (query, onComplete) => {
-      delete window.onCompleteOauth;
-      onComplete?.();
-      const params = new URLSearchParams(query.startsWith("?") ? query.slice(1) : query);
-      const tokens = tokensFromHandoffPayload({
-        access_token: params.get("access_token"),
-        refresh_token: params.get("refresh_token"),
-        expires_in: params.get("expires_in"),
-      });
-      if (!tokens) {
-        fail("Spotify sign-in returned no tokens");
-        return;
-      }
-      finish(tokens);
-    };
-
-    const timeout = setTimeout(
-      () => {
-        fail("Spotify sign-in timed out");
-      },
-      5 * 60 * 1000,
-    );
-  });
-}
-
 const EMPTY_PLAYLISTS: ImportPlaylist[] = [];
-
-function isSpotifyAuthRequired(error: ApiError | null | undefined) {
-  return getApiErrorBody(error)?.code === SPOTIFY_AUTH_REQUIRED_CODE;
-}
 
 function validYoutubePreview(payload: PreviewYoutubeMusicPlaylistResponse) {
   const playlist = payload?.playlist;
@@ -512,6 +407,8 @@ export function PlaylistImportModal({
         connected: true,
         displayName: status?.displayName || null,
         connectedAt: status?.connectedAt || null,
+        // A new sign-in grants every scope Aurral asks for.
+        canReadFollowedArtists: true,
       });
     },
     onError: (error) => {

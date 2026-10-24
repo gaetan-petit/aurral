@@ -47,12 +47,30 @@ interface SpotifyPlaylistSummary {
   tracks?: { total?: number };
 }
 
+interface SpotifyArtist {
+  id?: string;
+  name?: string;
+  genres?: string[];
+  images?: { url?: string; width?: number | null }[];
+}
+
+interface SpotifyFollowedArtistsPage {
+  artists?: { items?: (SpotifyArtist | null)[]; next?: string | null; total?: number };
+}
+
 interface SpotifyPage<T> {
   items?: T[];
   next?: string | null;
   total?: number;
   offset?: number;
 }
+
+export type FollowedArtist = {
+  id: string;
+  name: string;
+  imageUrl: string | null;
+  genres: string[];
+};
 
 interface SpotifyPageSummary {
   offset: number | null;
@@ -75,11 +93,14 @@ interface FetchAllPagesOptions {
 
 const TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000;
 export const SPOTIFY_AUTH_REQUIRED_CODE = "SPOTIFY_AUTH_REQUIRED";
+export const SPOTIFY_SCOPE_REQUIRED_CODE = "SPOTIFY_SCOPE_REQUIRED";
 const INVALID_GRANT = "invalid_grant";
 const playlistTrackCache = createCache(2 * 60, 200);
 const playlistTrackInflight = new Map();
 const playlistTrackGeneration = new Map();
 const tokenRefreshInflight = new Map();
+const followedArtistCache = createCache(2 * 60, 200);
+const followedArtistInflight = new Map();
 
 const getPlaylistTrackGeneration = (userId: number | string | undefined) =>
   playlistTrackGeneration.get(String(userId)) || 0;
@@ -99,6 +120,27 @@ const createAuthRequiredError = (message: string) => {
   error.code = SPOTIFY_AUTH_REQUIRED_CODE;
   error.statusCode = 401;
   return error;
+};
+
+// Spotify answers 403 when the sign-in did not grant the scope a call needs.
+const scopeFailure = (error: unknown) => {
+  const failure = asAppError(error) as SpotifyError | undefined;
+  if (failure?.statusCode !== 403 || !/scope/i.test(failure.message)) return error;
+  const scopeError: SpotifyError = new Error(
+    "Connect Spotify again to allow reading followed artists",
+  );
+  scopeError.code = SPOTIFY_SCOPE_REQUIRED_CODE;
+  scopeError.statusCode = 403;
+  return scopeError;
+};
+
+// The smallest image that still fills a list row.
+const artistImageUrl = (images: SpotifyArtist["images"]) => {
+  const sized = (Array.isArray(images) ? images : []).filter((image) => image?.url);
+  const fitting = sized
+    .filter((image) => Number(image.width || 0) >= 64)
+    .sort((a, b) => Number(a.width || 0) - Number(b.width || 0));
+  return fitting[0]?.url || sized[0]?.url || null;
 };
 
 const createIncompletePlaylistError = (
@@ -330,6 +372,56 @@ export const spotifyClient = {
     };
   },
 
+  // Followed artists come in cursor pages of 50, so a large list takes a
+  // few seconds; callers share one fetch and a short cache.
+  async listFollowedArtists(userId: number) {
+    const cacheKey = `${String(userId)}:${getPlaylistTrackGeneration(userId)}`;
+    const cached = followedArtistCache.get(cacheKey);
+    if (cached !== undefined) return cached as FollowedArtist[];
+    const inflight = followedArtistInflight.get(cacheKey);
+    if (inflight) return inflight as Promise<FollowedArtist[]>;
+    const request = (async () => {
+      const artists: FollowedArtist[] = [];
+      const seen = new Set<string>();
+      let nextUrl: string | null = null;
+      try {
+        do {
+          const payload: SpotifyFollowedArtistsPage = nextUrl
+            ? await spotifyRequest(userId, null, { url: nextUrl })
+            : await spotifyRequest(userId, "/me/following", {
+                searchParams: { type: "artist", limit: 50 },
+              });
+          for (const artist of payload?.artists?.items || []) {
+            const id = String(artist?.id || "").trim();
+            const name = String(artist?.name || "").trim();
+            if (!id || !name || seen.has(id)) continue;
+            seen.add(id);
+            artists.push({
+              id,
+              name,
+              imageUrl: artistImageUrl(artist?.images),
+              genres: Array.isArray(artist?.genres) ? artist.genres.slice(0, 3) : [],
+            });
+          }
+          nextUrl = payload?.artists?.next || null;
+        } while (nextUrl);
+      } catch (error) {
+        throw scopeFailure(error);
+      }
+      artists.sort((a, b) => a.name.localeCompare(b.name));
+      followedArtistCache.set(cacheKey, artists);
+      return artists;
+    })();
+    followedArtistInflight.set(cacheKey, request);
+    try {
+      return await request;
+    } finally {
+      if (followedArtistInflight.get(cacheKey) === request) {
+        followedArtistInflight.delete(cacheKey);
+      }
+    }
+  },
+
   async listPlaylistTracks(
     userId: number | undefined,
     playlistId: string,
@@ -399,5 +491,7 @@ export const spotifyClient = {
     }
     playlistTrackCache.flushAll();
     playlistTrackInflight.clear();
+    followedArtistCache.flushAll();
+    followedArtistInflight.clear();
   },
 };

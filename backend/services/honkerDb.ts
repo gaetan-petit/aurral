@@ -677,6 +677,11 @@ export function enqueueHonkerStartupTasks() {
     .catch((error) =>
       console.warn("[LibraryFiles] Could not resume file operations:", error?.message || error),
     );
+  import("./artistImport/artistImport.ts")
+    .then(({ resumeArtistImports }) => resumeArtistImports())
+    .catch((error) =>
+      console.warn("[ArtistImport] Could not resume artist imports:", error?.message || error),
+    );
   enqueueIfAbsent({ kind: "discovery-bootstrap" }, { delaySeconds: 15, priority: 5 });
   enqueueIfAbsent({ kind: "library-index-bootstrap" }, { delaySeconds: 8, priority: 0 });
   enqueueIfAbsent({ kind: "release-metadata-refresh" }, { delaySeconds: 12, priority: -5 });

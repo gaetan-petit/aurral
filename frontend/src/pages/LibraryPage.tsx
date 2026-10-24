@@ -1,5 +1,14 @@
 import ArtworkImage from "../components/ArtworkImage";
-import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentProps,
+} from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Link,
@@ -35,6 +44,7 @@ import {
   Shuffle,
   Sparkles,
   Trash2,
+  UserPlus,
   X,
 } from "lucide-react";
 
@@ -519,6 +529,7 @@ function LibraryPage() {
   const [artworkEditor, setArtworkEditor] = useState<ArtworkEditorState | null>(null);
   const [mbidArtist, setMbidArtist] = useState<LibraryArtist | null | undefined>(null);
   const [deleteFiles, setDeleteFiles] = useState(false);
+  const [artistImportOpen, setArtistImportOpen] = useState(false);
   const [deletingLibraryEntity, setDeletingLibraryEntity] = useState(false);
   const [homeAlbumsGridRef, homeAlbumColumns] = useResponsiveReleaseLimit({
     cardMinWidth: 152,
@@ -3290,6 +3301,16 @@ function LibraryPage() {
 
   const renderLibraryModals = () => (
     <>
+      {artistImportOpen ? (
+        <Suspense fallback={null}>
+          <ArtistImportModal
+            open={artistImportOpen}
+            onClose={() => setArtistImportOpen(false)}
+            onArtistsAdded={completeLibraryRefresh}
+            showError={showError}
+          />
+        </Suspense>
+      ) : null}
       <DeleteArtistModal
         show={libraryRemoval?.kind === "artist"}
         artistName={libraryRemoval?.kind === "artist" ? libraryRemoval.entity.name : undefined}
@@ -3555,6 +3576,16 @@ function LibraryPage() {
             </h1>
           </div>
           <div className="native-library-header-actions">
+            {tab === "artists" && canEditArtistMbid && !isPreviewLibrary && (
+              <TooltipButton
+                className="native-library-icon-button"
+                onClick={() => setArtistImportOpen(true)}
+                label="Import artists"
+                aria-label="Import followed artists from Spotify"
+              >
+                <UserPlus aria-hidden="true" />
+              </TooltipButton>
+            )}
             {selectedGenre && (
               <RouteLink
                 className="btn btn-surface btn-sm"
@@ -3784,3 +3815,7 @@ function LibraryPage() {
 }
 
 export default LibraryPage;
+
+const ArtistImportModal = lazy(() =>
+  import("./ArtistImportModal.tsx").then((m) => ({ default: m.ArtistImportModal })),
+);

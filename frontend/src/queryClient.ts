@@ -112,6 +112,17 @@ export const queryKeys = {
     "monitoring",
   ],
   monitoringDefaults: ["library", "monitoring", "defaults"],
+  followedSpotifyArtists: ["library", "import", "spotify", "artists"],
+  latestArtistImport: ["library", "import", "artists", "latest"],
+  artistImport: (id: number): QueryKey => ["library", "import", "artists", "operation", id],
+  artistImportItems: (id: MaybeId, limit: number): QueryKey => [
+    "library",
+    "import",
+    "artists",
+    id ?? null,
+    "items",
+    limit,
+  ],
   monitoringExclusionsPrefix: ["library", "monitoring", "exclusions"],
   monitoringExclusions: (artistMbid: MaybeText): QueryKey => [
     "library",

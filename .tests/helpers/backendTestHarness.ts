@@ -39,6 +39,8 @@ const RESET_TABLES = [
   "lidarr_artist_id_map",
   "library_file_operation_items",
   "library_file_operations",
+  "artist_import_items",
+  "artist_import_operations",
   "library_media_files",
   "library_album_tracks",
   "library_tracks",

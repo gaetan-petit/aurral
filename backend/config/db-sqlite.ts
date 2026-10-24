@@ -584,6 +584,38 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_library_file_operation_items_status
     ON library_file_operation_items(operation_id, status, position);
 
+  CREATE TABLE IF NOT EXISTS artist_import_operations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_user_id INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    status TEXT NOT NULL,
+    error TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    finished_at INTEGER
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_artist_import_operations_owner
+    ON artist_import_operations(owner_user_id, status);
+
+  CREATE TABLE IF NOT EXISTS artist_import_items (
+    operation_id INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    external_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    status TEXT NOT NULL,
+    mbid TEXT,
+    artist_id INTEGER,
+    reason TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (operation_id, position),
+    FOREIGN KEY (operation_id) REFERENCES artist_import_operations(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_artist_import_items_status
+    ON artist_import_items(operation_id, status, position);
+
   CREATE TABLE IF NOT EXISTS honker_task_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id INTEGER NOT NULL,

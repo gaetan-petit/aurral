@@ -74,6 +74,11 @@ export async function processSystemTask(
       await libraryManager.acquireAurralReleases(parseMonitoringApply(payload!));
       return;
     }
+    case "artist-import": {
+      const { processArtistImportJob } = await import("./artistImport/artistImport.ts");
+      await processArtistImportJob(payload!);
+      return;
+    }
     case "aurral-monitoring-reconcile": {
       const { libraryManager } = await import("./libraryManager.ts");
       await libraryManager.reconcileAurralMonitoring();

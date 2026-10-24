@@ -116,6 +116,11 @@ const SYSTEM_TASK_QUEUES = new Set([
 ]);
 
 export const SYSTEM_TASK_LABELS = {
+  "artist-import": {
+    label: "Artist import",
+    description:
+      "Adds imported artists to the library one at a time, with the default monitoring rules.",
+  },
   "playback-library-scan": {
     label: "Media server scan",
     description: "Refreshes connected media servers after files change.",

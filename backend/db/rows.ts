@@ -80,6 +80,30 @@ export interface HonkerStreamConsumersRow {
   offset: number;
 }
 
+export interface ArtistImportItemsRow {
+  operation_id: number;
+  position: number;
+  external_id: string;
+  name: string;
+  status: string;
+  mbid: string | null;
+  artist_id: number | null;
+  reason: string | null;
+  attempts: number;
+  updated_at: number;
+}
+
+export interface ArtistImportOperationsRow {
+  id: number;
+  owner_user_id: number;
+  source: string;
+  status: string;
+  error: string | null;
+  created_at: number;
+  updated_at: number;
+  finished_at: number | null;
+}
+
 export interface ArtistOverridesRow {
   mbid: string | null;
   musicbrainz_id: string | null;

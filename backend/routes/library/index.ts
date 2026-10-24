@@ -8,6 +8,7 @@ import { registerLibraryIndex } from "./handlers/libraryIndex.ts";
 import { registerFiles } from "./handlers/files.ts";
 import { registerMonitoring } from "./handlers/monitoring.ts";
 import { registerArtwork } from "./handlers/artwork.ts";
+import { registerArtistImport } from "./handlers/artistImport.ts";
 import mountRoutes from "../shared/mountRoutes.ts";
 
 export default mountRoutes([
@@ -21,4 +22,5 @@ export default mountRoutes([
   registerDownloads,
   registerMisc,
   registerFiles,
+  registerArtistImport,
 ]);

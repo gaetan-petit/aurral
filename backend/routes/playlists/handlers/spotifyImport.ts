@@ -1,4 +1,8 @@
-import { buildSpotifyOAuthUrl, SPOTIFY_API_BASE } from "../../../services/spotify/spotifyConfig.ts";
+import {
+  buildSpotifyOAuthUrl,
+  SPOTIFY_API_BASE,
+  SPOTIFY_SCOPES,
+} from "../../../services/spotify/spotifyConfig.ts";
 import { spotifyConnectionStore } from "../../../services/spotify/spotifyConnectionStore.ts";
 import {
   SPOTIFY_AUTH_REQUIRED_CODE,
@@ -13,7 +17,8 @@ import { syncStaticPlaylistImport } from "../../../services/importLists/importLi
 import { flowPlaylistConfig } from "../../../services/playlists/flowPlaylistConfig.ts";
 import { getAccessibleStaticPlaylist } from "./utils.ts";
 import { asAppError } from "../../../../lib/errors.ts";
-import type { Response, Router } from "express";
+import { sendSpotifyError } from "../../shared/spotifyErrors.ts";
+import type { Router } from "express";
 
 const parseExpiresAt = (value: unknown) => {
   const expiresIn = Number(value);
@@ -27,26 +32,12 @@ const parseExpiresAt = (value: unknown) => {
   return Date.now() + 3600 * 1000;
 };
 
-function sendSpotifyError(res: Response, error: unknown, fallback: string) {
-  const failure = asAppError(error);
-  if (failure?.code === SPOTIFY_AUTH_REQUIRED_CODE) {
-    return res.status(401).json({
-      error: "Spotify authentication required",
-      code: SPOTIFY_AUTH_REQUIRED_CODE,
-      message: "Your Spotify connection expired. Connect Spotify again.",
-    });
-  }
-  return res.status(failure?.statusCode || 500).json({
-    error: fallback,
-    message: failure?.message || "Unknown error",
-  });
-}
-
 export type GetSpotifyImportStatusResponse = {
   connected: boolean;
   displayName: string | null;
   connectedAt: number | null;
   reconnectRequired: boolean;
+  canReadFollowedArtists: boolean;
 };
 
 export type StartSpotifyOAuthResponse = { oauthUrl: string };
@@ -113,7 +104,12 @@ export function registerSpotifyImport(router: Router) {
         refreshToken,
         expiresAt,
         displayName,
+        // The sign-in grants the scopes Aurral asks for.
+        scopes: SPOTIFY_SCOPES,
       });
+      // A new sign-in may be another account, so nothing cached from the
+      // old one is served again.
+      spotifyClient.clearPlaylistTrackCache(req.user!.id);
       if (!saved) {
         return res.status(500).json({
           error: "Failed to complete Spotify connection",

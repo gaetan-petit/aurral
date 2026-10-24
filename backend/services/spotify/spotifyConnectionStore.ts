@@ -2,6 +2,7 @@ import { db, dbHelpers } from "../../config/db-sqlite.ts";
 import { decryptWithKey, encryptWithKey } from "../../config/encryption.ts";
 import { getSettingsEncryptionKey } from "../../db/helpers/settings.ts";
 import type { SettingsRow } from "../../db/rows.ts";
+import { SPOTIFY_FOLLOW_SCOPE } from "./spotifyConfig.ts";
 
 const SETTINGS_KEY = "spotifyConnections";
 const getSettingStmt = db.prepare<[string], Pick<SettingsRow, "value">>(
@@ -18,6 +19,7 @@ interface StoredSpotifyConnection {
   displayName?: unknown;
   connectedAt?: unknown;
   reconnectRequired?: unknown;
+  scopes?: unknown;
 }
 
 type StoredSpotifyConnections = Record<string, StoredSpotifyConnection>;
@@ -28,6 +30,7 @@ interface SpotifyConnectionInput {
   expiresAt?: number;
   displayName?: string | null;
   reconnectRequired?: boolean;
+  scopes?: string | null;
 }
 
 const readStore = (): StoredSpotifyConnections => {
@@ -67,8 +70,15 @@ const normalizeConnection = (raw: StoredSpotifyConnection | null) => {
         ? Number(raw.connectedAt)
         : Date.now(),
     reconnectRequired: raw.reconnectRequired === true,
+    // Connections made before Aurral asked for a scope don't list it.
+    scopes: typeof raw.scopes === "string" ? raw.scopes : null,
   };
 };
+
+const hasScope = (connection: SpotifyConnection, scope: string) =>
+  String(connection.scopes || "")
+    .split(/\s+/)
+    .includes(scope);
 
 export type SpotifyConnection = NonNullable<ReturnType<typeof normalizeConnection>>;
 
@@ -91,12 +101,18 @@ export const spotifyConnectionStore = {
   getPublicStatus(userId: number) {
     const connection = this.getConnection(userId);
     if (!connection || connection.reconnectRequired) {
-      return { connected: false, displayName: null, connectedAt: null };
+      return {
+        connected: false,
+        displayName: null,
+        connectedAt: null,
+        canReadFollowedArtists: false,
+      };
     }
     return {
       connected: true,
       displayName: connection.displayName,
       connectedAt: connection.connectedAt,
+      canReadFollowedArtists: hasScope(connection, SPOTIFY_FOLLOW_SCOPE),
     };
   },
 
@@ -108,6 +124,7 @@ export const spotifyConnectionStore = {
       expiresAt,
       displayName = null,
       reconnectRequired = false,
+      scopes = null,
     }: SpotifyConnectionInput = {},
   ) {
     const safeAccessToken = String(accessToken || "").trim();
@@ -128,6 +145,7 @@ export const spotifyConnectionStore = {
       displayName: String(displayName || "").trim() || null,
       connectedAt: now,
       reconnectRequired,
+      scopes: String(scopes || "").trim() || null,
     };
     writeStore(store);
     return this.getConnection(userId);
@@ -145,6 +163,7 @@ export const spotifyConnectionStore = {
       expiresAt: expiresAt ?? current.expiresAt,
       displayName: current.displayName,
       reconnectRequired: current.reconnectRequired,
+      scopes: current.scopes,
     });
   },
 
