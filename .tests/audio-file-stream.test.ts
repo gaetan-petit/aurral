@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, test } from "vite-plus/test";
 import { audioContentType, sendAudioFile } from "../backend/services/audioFileStream.ts";
+import { sendFrom } from "../backend/services/fileResponses.ts";
 import { createMockHttpServer } from "./helpers/backendTestHarness.ts";
 
 const audio = Buffer.from(Array.from({ length: 100 }, (_, index) => index));
@@ -49,6 +50,25 @@ test("a range past the end is unsatisfiable", async () => {
   assert.equal(response.status, 416);
   assert.equal(response.headers.get("content-range"), "bytes */100");
   assert.equal(body.length, 0);
+});
+
+test("a failed precondition gets a 412 instead of an error", async () => {
+  const { response, body } = await get("track.flac", { headers: { "If-Match": '"stale"' } });
+  assert.equal(response.status, 412);
+  assert.equal(body.length, 0);
+});
+
+test("a malformed path is left for the caller to answer", async () => {
+  const site = await createMockHttpServer(async (req, res) => {
+    if (!(await sendFrom(req, res, dir, req.url ?? "/"))) res.writeHead(404).end();
+  });
+  try {
+    assert.equal((await fetch(`${site.url}/%E0%A4%A.flac`)).status, 404);
+    assert.equal((await fetch(`${site.url}/track%00.flac`)).status, 404);
+    assert.equal((await fetch(`${site.url}/track.flac`)).status, 200);
+  } finally {
+    await site.close();
+  }
 });
 
 test("a missing file or a directory is left for the caller to answer", async () => {

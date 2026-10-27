@@ -41,10 +41,11 @@ export function sendFrom(
         const failure = asAppError(error);
         if (res.headersSent) {
           res.destroy();
-        } else if (failure?.status === 416) {
-          res.statusCode = 416;
+        } else if (failure?.status === 412 || failure?.status === 416) {
+          res.statusCode = failure.status;
           res.end();
         } else if (
+          failure?.status === 400 ||
           failure?.status === 403 ||
           failure?.status === 404 ||
           MISSING_FILE_CODES.has(failure?.code)
