@@ -721,7 +721,12 @@ async function handleSubsonicRequest(c: Context<AppEnv>, requestedMethod: string
     }
     const playlistArtwork = await resolvePlaylistArtwork(getParameter(params, "id"), user);
     if (playlistArtwork) {
-      c.header("Cache-Control", "private, max-age=86400");
+      c.header(
+        "Cache-Control",
+        playlistArtwork.versioned
+          ? "private, max-age=31536000, immutable"
+          : "private, max-age=86400",
+      );
       const sent = await sendViaNode(c, sendFile, playlistArtwork.safePath);
       return sent || notFound(c, "Cover art not found");
     }
