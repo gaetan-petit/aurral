@@ -11,7 +11,13 @@ import inbox from "./inbox.ts";
 import library from "./library/index.ts";
 import libraryStreams from "./library/streams.ts";
 import onboarding from "./onboarding.ts";
+import playlistArtwork from "./playlists/handlers/artwork.ts";
+import flows from "./playlists/handlers/flows.ts";
+import playlistImports from "./playlists/handlers/imports.ts";
+import playlistJobs from "./playlists/handlers/jobs.ts";
+import staticPlaylists from "./playlists/handlers/staticPlaylists.ts";
 import playlistStreams from "./playlists/handlers/stream.ts";
+import playlistWorker from "./playlists/handlers/worker.ts";
 import requests from "./requests.ts";
 import scrobbling from "./scrobbling.ts";
 import settings from "./settings/index.ts";
@@ -48,6 +54,12 @@ export const api = new Hono<AppEnv>()
   .route("/", library)
   .route("/", requests)
   .route("/", playlistStreams)
+  .route("/", playlistArtwork)
+  .route("/", flows)
+  .route("/", staticPlaylists)
+  .route("/", playlistImports)
+  .route("/", playlistJobs)
+  .route("/", playlistWorker)
   .route("/", artistStream)
   .route("/", settings)
   .route("/", settingsPlayback)

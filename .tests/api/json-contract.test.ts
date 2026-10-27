@@ -22,7 +22,6 @@ const [
   { default: discoveryRouter },
   { default: searchRouter },
   { default: artistRouter },
-  { default: playlistRouter },
   libraryStore,
   { setLibraryManagement },
   { reloadDiscoveryPersistedCache },
@@ -39,7 +38,6 @@ const [
   () => import("../../backend/routes/discovery/index.ts"),
   () => import("../../backend/routes/search.ts"),
   () => import("../../backend/routes/artists/index.ts"),
-  () => import("../../backend/routes/playlists/index.ts"),
   () => import("../../backend/services/libraryMediaStore.ts"),
   () => import("../../backend/services/libraryManagementStore.ts"),
   () => import("../../backend/services/discovery/persistence.ts"),
@@ -208,13 +206,15 @@ beforeAll(async () => {
   });
   const app = express();
   app.use(authMiddleware);
-  app.use(["/api/auth", "/api/health", "/api/library", "/api/requests"], handToHono);
+  app.use(
+    ["/api/auth", "/api/health", "/api/library", "/api/requests", "/api/playlists"],
+    handToHono,
+  );
   app.use(express.json());
   for (const [route, router] of [
     ["discover", discoveryRouter],
     ["search", searchRouter],
     ["artists", artistRouter],
-    ["playlists", playlistRouter],
   ] as const)
     app.use(`/api/${route}`, router);
   server = await new Promise<

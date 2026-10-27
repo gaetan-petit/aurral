@@ -6,7 +6,7 @@ import TooltipButton from "../components/TooltipButton";
 import { useAuth } from "../contexts/AuthContext";
 import { useModalDialog } from "../hooks/useModalDialog.ts";
 import { libraryTracksClient } from "../utils/api/clients/libraryTracks.ts";
-import { getJobFiles } from "../utils/api/endpoints/playlists.ts";
+import { playlistJobsClient } from "../utils/api/clients/playlistJobs.ts";
 import type { LibraryAlbum, LibraryArtist, LibraryTrack } from "../utils/libraryPageData.ts";
 
 type LibraryQuality = NonNullable<LibraryTrack["files"][number]["quality"]>;
@@ -194,7 +194,12 @@ export default function LibraryInfoModal({
     queryKey: ["track-files", item?.source || "library", trackId],
     queryFn: ({ signal }) =>
       item?.source === "playlist"
-        ? getJobFiles(String(trackId), { signal })
+        ? parseResponse(
+            playlistJobsClient.jobs[":jobId"].files.$get(
+              { param: { jobId: encodeURIComponent(String(trackId)) } },
+              { init: { signal } },
+            ),
+          )
         : parseResponse(
             libraryTracksClient.tracks[":id"].files.$get(
               { param: { id: encodeURIComponent(trackId!) } },

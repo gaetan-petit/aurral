@@ -3,17 +3,11 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { parseResponse } from "hono/client";
 import { useNavigate } from "react-router";
-import {
-  addStaticPlaylistTracks,
-  createStaticPlaylist,
-  reSearchFlowTrack,
-  reSearchStaticPlaylistTrack,
-  searchTrackUpgrade,
-  uploadPlaylistTrackArtwork,
-  setPlaylistTrackArtworkUrl,
-  deletePlaylistTrackArtwork,
-  getPlaylistTrackArtworkUrl,
-} from "../../utils/api/endpoints/playlists.ts";
+import { flowsClient } from "../../utils/api/clients/flows.ts";
+import { playlistArtworkClient } from "../../utils/api/clients/playlistArtwork.ts";
+import { playlistJobsClient } from "../../utils/api/clients/playlistJobs.ts";
+import { staticPlaylistsClient } from "../../utils/api/clients/staticPlaylists.ts";
+import { getPlaylistTrackArtworkUrl } from "../../utils/api/playlistUrls.ts";
 import { getReleaseGroupCoversBatch } from "../../utils/api/endpoints/artists.ts";
 import {
   downloadTrackToLibrary,
@@ -44,6 +38,9 @@ import { normalizeNameKey, normalizePlaylistTrackEntry, reserveUniqueName } from
 import type { Flow, StaticPlaylist } from "./playlistStats.ts";
 import type { PlaylistTrackRow } from "./playlistPageUtils.ts";
 import { getApiErrorMessage } from "../onboardingUtils.tsx";
+
+const sharedPlaylists = staticPlaylistsClient["shared-playlists"];
+const trackArtwork = playlistArtworkClient["track-artwork"][":jobId"];
 
 type FavoriteSongs = {
   song?: Pick<LibraryFavoritesResponse["song"][number], "id">[];
@@ -182,6 +179,11 @@ export function PlaylistTracks({
     });
   };
 
+  const trackArtworkRequest = (jobId: string) => ({
+    param: { jobId: encodeURIComponent(jobId) },
+    query: { playlistId: entry.id },
+  });
+
   const handleArtworkSaved = async (result: CustomArtworkResult) => {
     if (artworkEditor) {
       updateQueueArtwork(
@@ -212,9 +214,16 @@ export function PlaylistTracks({
           "the playlist";
     try {
       if (target?.mode === "new") {
-        await createStaticPlaylist({ name: targetName, tracks: [payload] });
+        await parseResponse(
+          sharedPlaylists.$post({ json: { name: targetName, tracks: [payload] } }),
+        );
       } else {
-        await addStaticPlaylistTracks(target.playlistId, { tracks: [payload] });
+        await parseResponse(
+          sharedPlaylists[":playlistId"].tracks.$post({
+            param: { playlistId: encodeURIComponent(target.playlistId) },
+            json: { tracks: [payload] },
+          }),
+        );
       }
       showSuccess(`Added ${payload.trackName} to ${targetName}`);
       void refreshAll();
@@ -244,9 +253,16 @@ export function PlaylistTracks({
           "the playlist";
     try {
       if (target?.mode === "new") {
-        await createStaticPlaylist({ name: targetName, tracks: payloads });
+        await parseResponse(
+          sharedPlaylists.$post({ json: { name: targetName, tracks: payloads } }),
+        );
       } else {
-        await addStaticPlaylistTracks(target.playlistId, { tracks: payloads });
+        await parseResponse(
+          sharedPlaylists[":playlistId"].tracks.$post({
+            param: { playlistId: encodeURIComponent(target.playlistId) },
+            json: { tracks: payloads },
+          }),
+        );
       }
       showSuccess(`Added ${trackCountLabel(payloads.length)} to ${targetName}`);
       void refreshAll();
@@ -287,14 +303,29 @@ export function PlaylistTracks({
     }
     try {
       if (searchAction === "upgrade") {
-        const result = await searchTrackUpgrade(entry.id, jobId);
+        const result = await parseResponse(
+          playlistJobsClient["quality-upgrades"][":playlistId"][":jobId"].$post({
+            param: { playlistId: encodeURIComponent(entry.id), jobId: encodeURIComponent(jobId) },
+          }),
+        );
         showSuccess(
-          result?.alreadyQueued
+          result.queued === 0
             ? `Upgrade search already queued for ${track.trackName}`
             : `Searching for an upgrade to ${track.trackName}`,
         );
       } else {
-        await (isFlow ? reSearchFlowTrack : reSearchStaticPlaylistTrack)(entry.id, jobId);
+        await parseResponse(
+          isFlow
+            ? flowsClient.flows[":flowId"].tracks[":jobId"].research.$post({
+                param: { flowId: encodeURIComponent(entry.id), jobId: encodeURIComponent(jobId) },
+              })
+            : sharedPlaylists[":playlistId"].tracks[":jobId"].research.$post({
+                param: {
+                  playlistId: encodeURIComponent(entry.id),
+                  jobId: encodeURIComponent(jobId),
+                },
+              }),
+        );
         showSuccess(`Re-searching ${track.trackName}`);
       }
       await refreshAll();
@@ -501,9 +532,20 @@ export function PlaylistTracks({
         currentArtwork={artworkEditor?.currentArtwork}
         hasCustomArtwork={artworkEditor?.hasCustomArtwork}
         onClose={() => setArtworkEditor(null)}
-        onUpload={(file) => uploadPlaylistTrackArtwork(entry.id, artworkEditor!.id, file)}
-        onSaveUrl={(url) => setPlaylistTrackArtworkUrl(entry.id, artworkEditor!.id, url)}
-        onRemove={() => deletePlaylistTrackArtwork(entry.id, artworkEditor!.id)}
+        onUpload={(file) =>
+          parseResponse(
+            trackArtwork.$put(trackArtworkRequest(artworkEditor!.id), {
+              headers: { "Content-Type": file.type || "application/octet-stream" },
+              init: { body: file },
+            }),
+          )
+        }
+        onSaveUrl={(url) =>
+          parseResponse(
+            trackArtwork.url.$put({ ...trackArtworkRequest(artworkEditor!.id), json: { url } }),
+          )
+        }
+        onRemove={() => parseResponse(trackArtwork.$delete(trackArtworkRequest(artworkEditor!.id)))}
         onSaved={handleArtworkSaved}
       />
       <ManualMissingSearchModal

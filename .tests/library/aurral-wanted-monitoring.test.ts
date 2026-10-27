@@ -18,7 +18,6 @@ const [
   managementStore,
   { downloadTracker },
   { downloadWorker },
-  { registerJobs },
   { handToHono },
   { getMetadataBaseUrl },
   { setMetadataProviderCooldown },
@@ -30,7 +29,6 @@ const [
   () => import("../../backend/services/libraryManagementStore.ts"),
   () => import("../../backend/services/downloadJobs/downloadTracker.ts"),
   () => import("../../backend/services/downloadJobs/downloadWorker.ts"),
-  () => import("../../backend/routes/playlists/handlers/jobs.ts"),
   () => import("../../backend/routes/shared/expressHandoff.ts"),
   () => import("../../backend/services/providers/brainzmashProvider.ts"),
   () => import("../../backend/services/metadataProviderBudget.ts"),
@@ -44,11 +42,8 @@ app.use((req, _res, next) => {
   req.user = { id: 1, username: "test", role: "admin", permissions: {} };
   next();
 });
+app.use("/api/playlists", handToHono);
 app.use("/api/library", handToHono);
-app.use(express.json());
-const router = express.Router();
-registerJobs(router);
-app.use(router);
 const server = await new Promise<import("node:http").Server>((resolve) => {
   const listener = app.listen(0, "127.0.0.1", () => resolve(listener));
 });
@@ -226,7 +221,7 @@ test("Wanted reports jobs by their track's monitoring, whatever the album's", as
   });
 
   const monitoredById = new Map(
-    (await request<{ id: string; monitored: boolean }[]>("/jobs")).map((job) => [
+    (await request<{ id: string; monitored: boolean }[]>("/api/playlists/jobs")).map((job) => [
       job.id,
       job.monitored,
     ]),
@@ -274,8 +269,12 @@ test("Search all in Wanted skips unmonitored tracks and keeps monitored tracks o
     trackMonitored: true,
   });
 
-  const missing = await request<{ requeued: number }>("/research-missing", { method: "POST" });
-  const upgrades = await request<{ queued: number }>("/quality-upgrades", { method: "POST" });
+  const missing = await request<{ requeued: number }>("/api/playlists/research-missing", {
+    method: "POST",
+  });
+  const upgrades = await request<{ queued: number }>("/api/playlists/quality-upgrades", {
+    method: "POST",
+  });
 
   assert.equal(missing.requeued, 1);
   assert.deepEqual(
@@ -311,7 +310,9 @@ test("Keep this file stops upgrades of that file and cancels the upgrade already
   await keepFile(keptLibraryFile);
   downloadTracker.removeJob(keptLibraryFile);
 
-  const first = await request<{ queued: number }>("/quality-upgrades", { method: "POST" });
+  const first = await request<{ queued: number }>("/api/playlists/quality-upgrades", {
+    method: "POST",
+  });
   assert.equal(first.queued, 2);
   assert.deepEqual(
     [kept, other, keptBeforeCheck].map((jobId) => upgradeJobsOf(jobId).length),
@@ -332,11 +333,15 @@ test("Keep this file stops upgrades of that file and cancels the upgrade already
   assert.notEqual(upgradeJobsOf(other)[0].status, "cancelled");
   assert.equal(getJob(kept).status, "done");
 
-  const second = await request<{ queued: number }>("/quality-upgrades", { method: "POST" });
+  const second = await request<{ queued: number }>("/api/playlists/quality-upgrades", {
+    method: "POST",
+  });
   assert.equal(second.queued, 0);
   assert.equal(upgradeJobsOf(kept).length, 1);
 
-  const direct = await fetch(`${baseUrl}/quality-upgrades/library/${kept}`, { method: "POST" });
+  const direct = await fetch(`${baseUrl}/api/playlists/quality-upgrades/library/${kept}`, {
+    method: "POST",
+  });
   assert.equal(direct.status, 409);
   assert.equal((await direct.json()).code, "kept_file");
   assert.equal(upgradeJobsOf(kept).length, 1);
