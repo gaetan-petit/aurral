@@ -19,6 +19,8 @@ import {
 import { logger } from "../../../services/logger.ts";
 import { chooseLibraryRelease } from "../../../services/releaseResolver.ts";
 import { asAppError } from "../../../../lib/errors.ts";
+import type { ArtistCredit, TrackArtistCredit } from "../../../../lib/artistCredit.ts";
+import { getReleaseGroupTrackCredits } from "../../../services/trackArtistCredits.ts";
 
 type MbidRequest = Request<{ mbid: string }>;
 
@@ -66,6 +68,8 @@ export type ReleaseGroupTrack = {
   preview_url: string | null;
   previewProvider: string | null;
   previewTrackId: string | null;
+  // Filled in by the page from /release-group/:mbid/credits, which can be slower.
+  artistCredit?: ArtistCredit | null;
 };
 
 export function registerReleaseGroup(router: Router) {
@@ -215,6 +219,16 @@ export function registerReleaseGroup(router: Router) {
       res.set("Cache-Control", bypassCache ? "no-store" : "public, max-age=60");
       res.json({ images: [], notFound: false, transientError: true });
     }
+  });
+
+  router.get("/release-group/:mbid/credits", async (req: MbidRequest, res) => {
+    const { mbid } = req.params;
+    if (!UUID_REGEX.test(mbid)) {
+      return res.status(400).json({ error: "Invalid MBID format" });
+    }
+    const credits: TrackArtistCredit[] = await getReleaseGroupTrackCredits(mbid);
+    res.set("Cache-Control", credits.length ? "private, max-age=3600" : "no-store");
+    res.json(credits);
   });
 
   router.get("/release-group/:mbid/tracks", noCache, async (req: MbidRequest, res) => {

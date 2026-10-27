@@ -1,5 +1,6 @@
 import { resolveApiPath } from "./api/core.ts";
 import type { LibraryTrack } from "./libraryPageData.ts";
+import { formatArtistCredit, type ArtistCredit } from "../../../lib/artistCredit.ts";
 
 const FORMAT_BY_EXTENSION: Partial<Record<string, string[]>> = {
   mp3: ["mp3"],
@@ -30,6 +31,7 @@ export type QueueTrackInput = {
   artistName?: string | null;
   artistId?: string | number | null;
   artistMbid?: string | number | null;
+  artistCredit?: ArtistCredit | null;
   album?: string | null;
   albumName?: string | null;
   albumId?: string | number | null;
@@ -112,10 +114,14 @@ export function normalizeQueueTrack(track: QueueTrackInput, overrides: QueueTrac
     track?.artworkSource ??
     overrides.artworkSource ??
     (String(artwork || "").includes("/library/artwork/track/") ? "track" : null);
+  const artistCredit = track?.artistCredit ?? overrides.artistCredit ?? null;
   const merged = {
     id: id || `track-${crypto.randomUUID()}`,
     title: track?.title ?? track?.trackName ?? track?.name ?? "Unknown Track",
-    artist: track?.artist ?? track?.artistName ?? overrides.artist ?? "",
+    artist:
+      formatArtistCredit(artistCredit) ||
+      (track?.artist ?? track?.artistName ?? overrides.artist ?? ""),
+    artistCredit,
     album: track?.album ?? track?.albumName ?? overrides.album ?? "",
     artwork,
     artworkSource,
@@ -154,6 +160,7 @@ export function normalizePlaylistQueueTrack(
       id: track.id,
       title: track.trackName,
       artist: track.artistName,
+      artistCredit: track.artistCredit,
       album: track.albumName,
       artwork: track.artworkUrl || track.coverUrl || null,
       artworkSource: track.customArtworkUrl ? "track" : "album",
@@ -180,6 +187,7 @@ export function normalizePreviewTrack(
       id: track?.id ?? track?.mbid,
       title: track?.title,
       artist: artistName,
+      artistCredit: track?.artistCredit,
       src: track?.preview_url,
       artwork: track?.artwork ?? track?.artworkUrl,
       quality: track?.quality,

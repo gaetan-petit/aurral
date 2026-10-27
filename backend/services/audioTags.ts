@@ -30,7 +30,7 @@ const MUSICBRAINZ_UFID_OWNER = "http://musicbrainz.org";
 type TagFieldValue = string | number | string[] | null | undefined;
 
 interface TagFieldSpec {
-  read(tag: TagLib.Tag): TagFieldValue;
+  read(tag: TagLib.Tag, file: TagLib.File): TagFieldValue;
   write(tag: TagLib.Tag, value: TagFieldValue, file: TagLib.File): void;
   normalize?(value: unknown): TagFieldValue;
 }
@@ -47,6 +47,51 @@ const list = (value: unknown) =>
     .map(text)
     .filter(Boolean);
 
+const textValues = (value: unknown) =>
+  (Array.isArray(value) ? value : [value]).map(text).filter(Boolean);
+
+function userTextFrames(id3: TagLib.Id3v2Tag, description: string) {
+  const wanted = description.toLowerCase();
+  return id3
+    .getFramesByClassType<TagLib.Id3v2UserTextInformationFrame>(
+      Id3v2FrameClassType.UserTextInformationFrame,
+    )
+    .filter((frame) => frame.description.toLowerCase() === wanted);
+}
+
+// Multi-valued tags taglib has no property for, named the way MusicBrainz Picard
+// writes them: a Vorbis comment, an ID3 TXXX frame, or an iTunes freeform atom.
+function customTextField(xiphName: string, description: string) {
+  return {
+    read: (_tag: TagLib.Tag, file: TagLib.File) => {
+      const xiph = file.getTag(TagTypes.Xiph, false) as TagLib.XiphComment | undefined;
+      const id3 = file.getTag(TagTypes.Id3v2, false) as TagLib.Id3v2Tag | undefined;
+      const apple = file.getTag(TagTypes.Apple, false) as TagLib.Mpeg4AppleTag | undefined;
+      const xiphValues = textValues(xiph?.getField(xiphName) || []);
+      if (xiphValues.length) return xiphValues;
+      const id3Values = textValues((id3 && userTextFrames(id3, description)[0]?.text) || []);
+      if (id3Values.length) return id3Values;
+      return textValues(apple?.getItunesStrings(ITUNES_MEAN, description) || []);
+    },
+    write: (_tag: TagLib.Tag, value: string[], file: TagLib.File) => {
+      const xiph = file.getTag(TagTypes.Xiph, false) as TagLib.XiphComment | undefined;
+      if (xiph) xiph.setFieldAsStrings(xiphName, ...value);
+      const apple = file.getTag(TagTypes.Apple, false) as TagLib.Mpeg4AppleTag | undefined;
+      if (apple) apple.setItunesStrings(ITUNES_MEAN, description, ...value);
+      const id3 = file.getTag(TagTypes.Id3v2, false) as TagLib.Id3v2Tag | undefined;
+      if (id3) {
+        for (const frame of userTextFrames(id3, description)) id3.removeFrame(frame);
+        if (value.length) {
+          const frame = Id3v2UserTextInformationFrame.fromDescription(description);
+          frame.text = value;
+          id3.addFrame(frame);
+        }
+      }
+    },
+    normalize: textValues,
+  };
+}
+
 const FIELDS = {
   title: {
     read: (tag) => text(tag.title),
@@ -60,6 +105,9 @@ const FIELDS = {
       tag.performers = [value];
     },
   },
+  // Every credited artist, for players that link guests separately from the
+  // ARTIST text ("Main & Guest").
+  artists: customTextField("ARTISTS", "ARTISTS"),
   albumArtist: {
     read: (tag) => first(tag.albumArtists),
     write: (tag, value: string) => {
@@ -106,6 +154,8 @@ const FIELDS = {
       tag.musicBrainzArtistId = value;
     },
   },
+  // The same tag as artistMbid, holding one ID per credited artist.
+  artistMbids: customTextField("MUSICBRAINZ_ARTISTID", "MusicBrainz Artist Id"),
   albumArtistMbid: {
     read: (tag) => text(tag.musicBrainzReleaseArtistId),
     write: (tag, value: string) => {
@@ -191,8 +241,13 @@ async function openFile(filePath: string) {
   }
 }
 
+const CLEARABLE_FIELDS = new Set<AudioTagField>(["artists", "artistMbids"]);
 const emptyValue = (field: AudioTagField) =>
-  field === "genres" ? [] : FIELD_SPECS[field].normalize === positive ? 0 : undefined;
+  field === "genres" || field === "artists" || field === "artistMbids"
+    ? []
+    : FIELD_SPECS[field].normalize === positive
+      ? 0
+      : undefined;
 const isEmpty = (value: unknown) => (Array.isArray(value) ? value.length === 0 : !value);
 const normalize = (field: AudioTagField, value: unknown) =>
   (FIELD_SPECS[field].normalize || text)(value);
@@ -200,9 +255,12 @@ const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.st
 
 type AudioTagValues = { [K in keyof typeof FIELDS]: ReturnType<(typeof FIELDS)[K]["read"]> };
 
-function readFields(tag: TagLib.Tag) {
+function readFields(file: TagLib.File) {
   return Object.fromEntries(
-    AUDIO_TAG_FIELDS.map((field): [string, TagFieldValue] => [field, FIELDS[field].read(tag)]),
+    AUDIO_TAG_FIELDS.map((field): [string, TagFieldValue] => [
+      field,
+      FIELD_SPECS[field].read(file.tag, file),
+    ]),
   ) as AudioTagValues;
 }
 
@@ -220,11 +278,7 @@ function parseIdentity(value: unknown) {
 }
 
 function identityFrames(id3: TagLib.Id3v2Tag) {
-  return id3
-    .getFramesByClassType<TagLib.Id3v2UserTextInformationFrame>(
-      Id3v2FrameClassType.UserTextInformationFrame,
-    )
-    .filter((frame) => frame.description === AURRAL_IDENTITY_TAG);
+  return userTextFrames(id3, AURRAL_IDENTITY_TAG);
 }
 
 function readIdentity(file: TagLib.File) {
@@ -311,6 +365,11 @@ function planChanges(
   for (const field of AUDIO_TAG_FIELDS) {
     if (values[field] == null) continue;
     const wanted = normalize(field, values[field]);
+    // An explicit empty list clears a list tag, such as an uploader's ARTISTS.
+    if (isEmpty(wanted) && CLEARABLE_FIELDS.has(field) && Array.isArray(values[field])) {
+      if (!fillOnly && !isEmpty(current[field])) changes[field] = null;
+      continue;
+    }
     if (isEmpty(wanted) || same(wanted, current[field])) continue;
     if (fillOnly && !isEmpty(current[field])) continue;
     changes[field] = wanted;
@@ -330,7 +389,7 @@ function planChanges(
 export async function readAudioTags(filePath: string) {
   const file = await openFile(filePath);
   try {
-    return { ...readFields(file.tag), identity: readIdentity(file) };
+    return { ...readFields(file), identity: readIdentity(file) };
   } finally {
     file.dispose();
   }
@@ -350,7 +409,7 @@ export async function writeAudioTags(
   let identityChanged: boolean;
   let legacyIdentity: boolean;
   try {
-    changes = planChanges(readFields(preview.tag), values, fillOnly);
+    changes = planChanges(readFields(preview), values, fillOnly);
     identityChanged = Boolean(identity) && !same(readIdentity(preview), identity);
     legacyIdentity = Boolean(identity) && hasLegacyIdentity(preview);
   } finally {

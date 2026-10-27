@@ -5,6 +5,7 @@ import { mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { parseFile } from "music-metadata";
+import { writeAudioTags } from "../../backend/services/audioTags.ts";
 
 import {
   readAurralIdentity,
@@ -166,6 +167,29 @@ test("startup repair tags existing completed yt-dlp M4As", async () => {
     repaired: 0,
     failed: 0,
   });
+});
+
+test("startup repair keeps a featured-artist credit Aurral tagged", async () => {
+  const filePath = createUntaggedM4a("featured-track.m4a");
+  const job = {
+    status: "done",
+    downloadClient: "ytdlp",
+    finalPath: filePath,
+    trackName: "All the Stars",
+    artistName: "Kendrick Lamar",
+    albumName: "Black Panther: The Album",
+    artistMbid: "381086ea-f511-4aba-bdf9-71c753dc5077",
+    albumMbid: "4e317e28-e6b2-46d7-81f7-306e349b3dd4",
+    trackMbid: "a0a38516-c9c3-4a05-a2bf-523b6ca219ab",
+  };
+  await repairYtdlpMetadata([job]);
+  await writeAudioTags(filePath, {
+    artist: "Kendrick Lamar & SZA",
+    artists: ["Kendrick Lamar", "SZA"],
+  });
+
+  assert.deepEqual(await repairYtdlpMetadata([job]), { scanned: 1, repaired: 0, failed: 0 });
+  assert.equal((await parseFile(filePath)).common.artist, "Kendrick Lamar & SZA");
 });
 
 test("startup repair leaves a file that a yt-dlp job later reused from outside Aurral", async () => {

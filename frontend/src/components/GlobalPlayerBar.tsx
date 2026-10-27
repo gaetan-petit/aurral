@@ -9,6 +9,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { Link, useLocation } from "react-router";
+import { ArtistCredit } from "./ArtistCredit";
 import {
   ChevronDown,
   ListMusic,
@@ -203,6 +204,13 @@ function GlobalPlayerBar() {
         label
       )
     ) : null;
+  // A single credited artist keeps the link to the track's own artist page.
+  const artistMeta =
+    currentTrack.artistCredit && currentTrack.artistCredit.length > 1 ? (
+      <ArtistCredit credit={currentTrack.artistCredit} linkClassName="global-player__link" />
+    ) : (
+      metaLink(artistLabel, artistPath)
+    );
 
   const handleVolumeChange = (event: ChangeEvent<HTMLInputElement>) => {
     const nextVolume = Math.min(Math.max(Number(event.target.value) || 0, 0), 100);
@@ -369,7 +377,7 @@ function GlobalPlayerBar() {
                     <h2 className="now-playing__title">{currentTrack.title}</h2>
                     {artistLabel || albumLabel ? (
                       <p className="now-playing__subtitle">
-                        {metaLink(artistLabel, artistPath)}
+                        {artistMeta}
                         {artistLabel && albumLabel ? " · " : null}
                         {metaLink(albumLabel, albumPath)}
                       </p>
@@ -454,7 +462,7 @@ function GlobalPlayerBar() {
             </div>
             {artistLabel || albumLabel ? (
               <span className="global-player__subtitle">
-                {metaLink(artistLabel, artistPath)}
+                {artistMeta}
                 {artistLabel && albumLabel ? " · " : null}
                 {metaLink(albumLabel, albumPath)}
               </span>

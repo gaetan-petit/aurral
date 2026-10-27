@@ -623,6 +623,8 @@ function mapLibraryTrack(track: LibraryTrackRecord, album: LibraryAlbumRecord | 
     title: track.title,
     trackNumber: relation?.trackNumber || 0,
     discNumber: relation?.discNumber || 1,
+    artistName: track.artistName || null,
+    artistCredit: track.artistCredit || null,
     path: file?.path || null,
     hasFile: Boolean(file?.available),
     available: Boolean(file?.available),

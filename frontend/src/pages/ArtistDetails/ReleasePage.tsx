@@ -11,7 +11,12 @@ import {
   requestAlbumFromSearch,
   settleLibraryOwnerConflict,
 } from "../../utils/api/endpoints/library.ts";
-import { getReleaseGroupCover, getReleaseGroupTracks } from "../../utils/api/endpoints/artists.ts";
+import {
+  getReleaseGroupCover,
+  getReleaseGroupCredits,
+  getReleaseGroupTracks,
+} from "../../utils/api/endpoints/artists.ts";
+import { findTrackArtistCredit } from "../../../../lib/artistCredit.ts";
 import { useStaticPlaylists } from "../../hooks/useStaticPlaylists";
 import { useWebSocketChannel } from "../../hooks/useWebSocket";
 
@@ -169,10 +174,22 @@ function ReleasePage() {
     enabled: Boolean(releaseMbid),
     staleTime: 5 * 60 * 1000,
   });
-  const tracks = useMemo(
-    () => (Array.isArray(tracksQuery.data) ? tracksQuery.data : []),
-    [tracksQuery.data],
-  );
+  // Credits come from MusicBrainz, which is rate limited, so they load after the tracks.
+  const creditsQuery = useQuery({
+    queryKey: queryKeys.releaseGroupCredits(releaseMbid),
+    queryFn: ({ signal }) => getReleaseGroupCredits(releaseMbid!, { signal }),
+    enabled: Boolean(releaseMbid),
+    staleTime: 60 * 60 * 1000,
+  });
+  const tracks = useMemo(() => {
+    const list = Array.isArray(tracksQuery.data) ? tracksQuery.data : [];
+    const credits = creditsQuery.data;
+    if (!credits?.length) return list;
+    return list.map((track) => ({
+      ...track,
+      artistCredit: findTrackArtistCredit(credits, { mbid: track.mbid, title: track.title }),
+    }));
+  }, [creditsQuery.data, tracksQuery.data]);
   const loadingTracks = tracksQuery.isPending;
   const albumLookupQuery = useQuery({
     queryKey: queryKeys.libraryAlbumLookup(releaseMbid ? [releaseMbid] : []),

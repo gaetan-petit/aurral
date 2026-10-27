@@ -15,6 +15,7 @@ import { getMusicBrainzContact } from "./config.ts";
 import { runSharedInflight } from "../sharedInflight.ts";
 import { logger } from "../logger.ts";
 import { asAppError } from "../../../lib/errors.ts";
+import { artistCreditFromMusicBrainz, type TrackArtistCredit } from "../../../lib/artistCredit.ts";
 
 type ArtistAlbum = Awaited<ReturnType<typeof listMetadataArtistAlbums>>[number];
 
@@ -22,6 +23,7 @@ const musicbrainzArtistNameCache = createCache(3600);
 const musicbrainzReleaseGroupsCache = createCache(300);
 const musicbrainzAppearsOnCache = createCache(6 * 60 * 60, 200);
 const musicbrainzTagArtistsCache = createCache(6 * 60 * 60, 200);
+const musicbrainzReleaseCreditsCache = createCache(24 * 60 * 60, 500);
 const VARIOUS_ARTISTS_MBID = "89ad4ac3-39f7-470e-963a-56509c546377";
 const APPEARS_ON_PAGE_SIZE = 100;
 const APPEARS_ON_MAX_RELEASES = 1000;
@@ -42,7 +44,18 @@ const mbLimiter = createRateLimiter(1000);
 
 interface MusicBrainzArtistCredit {
   name?: string;
+  joinphrase?: string;
   artist?: { id?: string; name?: string };
+}
+
+interface MusicBrainzReleaseWithRecordings {
+  media?: {
+    tracks?: {
+      title?: string;
+      "artist-credit"?: MusicBrainzArtistCredit[];
+      recording?: { id?: string; "artist-credit"?: MusicBrainzArtistCredit[] };
+    }[];
+  }[];
 }
 
 interface MusicBrainzArtist {
@@ -172,6 +185,78 @@ const browseMusicbrainzTrackArtistReleases = async (
     return response.data;
   });
 };
+
+const RELEASE_CREDITS_FAILURE_TTL_SECONDS = 5 * 60;
+
+async function fetchReleaseTrackCredits(releaseMbid: string, signal?: AbortSignal) {
+  const credits: TrackArtistCredit[] = [];
+  try {
+    const data = await runSharedInflight(
+      musicbrainzInflightRequests,
+      `release-credits:${releaseMbid}`,
+      (sharedSignal: AbortSignal) =>
+        mbLimiter.schedule(async () => {
+          sharedSignal.throwIfAborted?.();
+          const response = await axios.get(`${MUSICBRAINZ_API}/release/${releaseMbid}`, {
+            params: { fmt: "json", inc: "recordings+artist-credits" },
+            headers: { "User-Agent": getMusicbrainzUserAgent() },
+            timeout: 8000,
+            signal: sharedSignal,
+          });
+          return response.data as MusicBrainzReleaseWithRecordings;
+        }),
+      { signal },
+    );
+    for (const medium of Array.isArray(data?.media) ? data.media : []) {
+      for (const track of Array.isArray(medium?.tracks) ? medium.tracks : []) {
+        const recordingId = String(track?.recording?.id || "").trim();
+        const artistCredit = artistCreditFromMusicBrainz(
+          track?.["artist-credit"] || track?.recording?.["artist-credit"],
+        );
+        if (recordingId && artistCredit) {
+          credits.push({ recordingId, title: String(track?.title || ""), artistCredit });
+        }
+      }
+    }
+    musicbrainzReleaseCreditsCache.set(releaseMbid, credits);
+  } catch (error) {
+    const failure = asAppError(error);
+    if (signal?.aborted || failure?.name === "AbortError") return credits;
+    // A short negative entry keeps retries from crowding the shared rate limit.
+    musicbrainzReleaseCreditsCache.set(releaseMbid, credits, RELEASE_CREDITS_FAILURE_TTL_SECONDS);
+    logger.warn("musicbrainz", "Release track credits lookup failed", {
+      releaseMbid,
+      message: failure?.message,
+    });
+  }
+  return credits;
+}
+
+// cachedOnly never starts a request; it returns what is cached, or waits up to
+// waitMs for a lookup already in flight.
+export async function getMusicbrainzReleaseTrackCredits(
+  releaseMbid: string | null | undefined,
+  {
+    signal,
+    cachedOnly = false,
+    waitMs = 0,
+  }: { signal?: AbortSignal; cachedOnly?: boolean; waitMs?: number } = {},
+): Promise<TrackArtistCredit[]> {
+  if (!releaseMbid) return [];
+  const cached = musicbrainzReleaseCreditsCache.get(releaseMbid);
+  if (cached) return cached;
+  if (!cachedOnly) return fetchReleaseTrackCredits(releaseMbid, signal);
+  if (!waitMs || !musicbrainzInflightRequests.has(`release-credits:${releaseMbid}`)) return [];
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<TrackArtistCredit[]>((resolve) => {
+    timer = setTimeout(() => resolve([]), waitMs);
+  });
+  try {
+    return await Promise.race([fetchReleaseTrackCredits(releaseMbid, signal), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 const isSpecialPurposeArtist = (artist: MusicBrainzArtist) =>
   artist.id === VARIOUS_ARTISTS_MBID || /^\[.*\]$/.test(artist.name!);

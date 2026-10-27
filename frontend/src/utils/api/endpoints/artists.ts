@@ -23,6 +23,7 @@ import type {
 import type { SimilarArtistsResponse } from "../../../../../backend/routes/artists/handlers/similar.ts";
 import type { ArtistAppearsOnResponse } from "../../../../../backend/routes/artists/handlers/appearsOn.ts";
 import type { ArtistVideoResponse } from "../../../../../backend/routes/artists/handlers/video.ts";
+import type { TrackArtistCredit } from "../../../../../lib/artistCredit.ts";
 
 type ArtistOverride = Pick<
   NonNullable<ReturnType<typeof dbOps.setArtistOverride>>,
@@ -174,6 +175,9 @@ export const getReleaseGroupTracks = async (
     signal: context.signal,
   });
 };
+
+export const getReleaseGroupCredits = (mbid: string, { signal }: { signal?: AbortSignal } = {}) =>
+  getData<TrackArtistCredit[]>(`/artists/release-group/${mbid}/credits`, { signal });
 
 export const getArtistCover = async (
   mbid: string | number,

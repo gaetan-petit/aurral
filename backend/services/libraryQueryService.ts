@@ -13,6 +13,7 @@ import {
   rebuildStoredLibraryGenreStats,
 } from "../config/library-search-index.ts";
 import { isOwnKey } from "../../lib/ownKey.ts";
+import { artistCreditFromTags, type ArtistCredit } from "../../lib/artistCredit.ts";
 import { getLibrarySearchMatch } from "./librarySearchIndex.ts";
 import {
   getManagedByMap,
@@ -292,6 +293,7 @@ export interface LibraryTrack {
   mbid: string | null;
   title: string;
   artistName: string | null;
+  artistCredit?: ArtistCredit | null;
   createdAt: number;
   metadata: Record<string, unknown> | null;
   providerId?: string | number | null;
@@ -304,6 +306,18 @@ export interface LibraryTrack {
   available: boolean;
   managedBy?: LibraryOwner | null;
   monitorMode?: string | null;
+}
+
+export function libraryTrackArtistCredit(
+  artistName: string | null | undefined,
+  metadata: Record<string, unknown> | null | undefined,
+) {
+  const tags = (metadata?.tags || {}) as Record<string, unknown>;
+  return artistCreditFromTags({
+    artist: tags.artist || artistName,
+    artists: tags.artists,
+    mbids: tags.musicbrainz_artistid,
+  });
 }
 
 interface LibraryRowArtist {
@@ -419,6 +433,7 @@ function buildLibraryFromRows(rows: Iterable<LibraryCanonicalRow>) {
         mbid: row.track_mbid,
         title: row.track_title,
         artistName: row.track_artist_name,
+        artistCredit: libraryTrackArtistCredit(row.track_artist_name, trackMetadata),
         createdAt: row.track_created_at,
         metadata: trackMetadata,
         providerId: trackMetadata?.id ?? null,

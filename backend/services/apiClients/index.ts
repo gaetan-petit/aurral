@@ -22,6 +22,7 @@ export {
   musicbrainzResolveArtistMbidByName,
   musicbrainzResolveLibraryArtistMbid,
   musicbrainzSearchArtistsByTag,
+  getMusicbrainzReleaseTrackCredits,
 } from "./musicbrainz.ts";
 
 export { lastfmRequest, lastfmGetSession, lastfmScrobble } from "./lastfm.ts";

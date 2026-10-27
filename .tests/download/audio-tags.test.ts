@@ -1,4 +1,4 @@
-import { test, afterAll } from "vite-plus/test";
+import { test, afterAll, type TestContext } from "vite-plus/test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { link, mkdtemp, readFile, rm, stat } from "node:fs/promises";
@@ -8,6 +8,9 @@ import { parseFile } from "music-metadata";
 import taglib from "node-taglib-sharp";
 
 import { readAurralIdentity, writeAudioMetadata } from "../../backend/services/downloadUtils.ts";
+import { warmReleaseTrackCredits } from "../../backend/services/trackArtistCredits.ts";
+import { getMusicbrainzReleaseTrackCredits } from "../../backend/services/apiClients/musicbrainz.ts";
+import { json, stubFetch } from "../helpers/artistStream.ts";
 
 const tempDir = await mkdtemp(path.join(os.tmpdir(), "aurral-audio-tags-"));
 const job = {
@@ -158,4 +161,93 @@ test("tagging a fragmented M4A leaves the file as it was instead of breaking its
   await assert.rejects(writeAudioMetadata(filePath, job), { code: "TAGS_UNSUPPORTED" });
 
   assert.deepEqual(await readFile(filePath), bytes);
+});
+
+test("a download tagged after its release credits were looked up keeps its featured artists", async (t: TestContext) => {
+  const releaseMbid = "77777777-7777-4777-8777-777777777777";
+  const kendrick = "381086ea-f511-4aba-bdf9-71c753dc5077";
+  const sza = "272989c8-5535-492d-a25c-9f58803e027f";
+  stubFetch(t, () =>
+    json({
+      media: [
+        {
+          tracks: [
+            {
+              title: "All the Stars",
+              "artist-credit": [
+                { name: "Kendrick Lamar", joinphrase: " & ", artist: { id: kendrick } },
+                { name: "SZA", joinphrase: "", artist: { id: sza } },
+              ],
+              recording: { id: "a0a38516-c9c3-4a05-a2bf-523b6ca219ab" },
+            },
+          ],
+        },
+      ],
+    }),
+  );
+  warmReleaseTrackCredits(releaseMbid);
+  await getMusicbrainzReleaseTrackCredits(releaseMbid);
+  const download = {
+    ...job,
+    trackName: "All the Stars",
+    artistName: "Kendrick Lamar",
+    artistMbid: kendrick,
+    releaseMbid,
+    trackMbid: "a0a38516-c9c3-4a05-a2bf-523b6ca219ab",
+  };
+
+  for (const [name, codec] of [
+    ["credit.flac", ["-c:a", "flac"]],
+    ["credit.mp3", ["-c:a", "libmp3lame"]],
+    ["credit.m4a", ["-c:a", "aac"]],
+  ] as const) {
+    const filePath = makeAudio(name, [...codec]);
+    await writeAudioMetadata(filePath, download);
+    const { common } = await parseFile(filePath);
+    assert.equal(common.artist, "Kendrick Lamar & SZA", name);
+    assert.deepEqual(common.artists, ["Kendrick Lamar", "SZA"], name);
+    assert.deepEqual(common.musicbrainz_artistid, [kendrick, sza], name);
+    assert.equal(common.albumartist, "Kendrick Lamar", name);
+  }
+});
+
+test("a download whose release credits were never looked up is tagged with the album artist", async () => {
+  const filePath = makeAudio("no-credit.flac", ["-c:a", "flac"]);
+  await writeAudioMetadata(filePath, {
+    ...job,
+    releaseMbid: "88888888-8888-4888-8888-888888888888",
+  });
+  const { common } = await parseFile(filePath);
+  assert.equal(common.artist, "Daft Punk");
+  assert.deepEqual(common.musicbrainz_artistid, [job.artistMbid]);
+});
+
+test("tagging a download without a credit drops the uploader's list of other artists", async () => {
+  for (const [name, codec, tagType] of [
+    ["uploader-artists.flac", ["-c:a", "flac"], taglib.TagTypes.Xiph],
+    ["uploader-artists.mp3", ["-c:a", "libmp3lame"], taglib.TagTypes.Id3v2],
+    ["uploader-artists.m4a", ["-c:a", "aac"], taglib.TagTypes.Apple],
+  ] as const) {
+    const filePath = makeAudio(name, [...codec]);
+    tagAsUploader(filePath, (file) => {
+      const tag = file.getTag(tagType, true);
+      file.tag.performers = ["Somebody Else"];
+      if (tag instanceof taglib.XiphComment) tag.setFieldAsStrings("ARTISTS", "X", "Y");
+      if (tag instanceof taglib.Id3v2Tag) {
+        const frame = taglib.Id3v2UserTextInformationFrame.fromDescription("ARTISTS");
+        frame.text = ["X", "Y"];
+        tag.addFrame(frame);
+      }
+      if (tag instanceof taglib.Mpeg4AppleTag) {
+        tag.setItunesStrings("com.apple.iTunes", "ARTISTS", "X", "Y");
+      }
+    });
+    assert.deepEqual((await parseFile(filePath)).common.artists, ["X", "Y"], name);
+
+    await writeAudioMetadata(filePath, job);
+
+    const { common } = await parseFile(filePath);
+    assert.equal(common.artist, "Daft Punk", name);
+    assert.deepEqual(common.artists, ["Daft Punk"], name);
+  }
 });

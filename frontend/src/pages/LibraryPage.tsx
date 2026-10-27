@@ -46,6 +46,13 @@ import { DotLoader } from "../components/DotLoader";
 import { LibraryItemMenu } from "../components/LibraryItemMenu";
 import TooltipButton from "../components/TooltipButton";
 import { FavoriteButton, TrackList } from "../components/TrackList";
+import { ArtistCredit, artistCreditPath } from "../components/ArtistCredit";
+import {
+  formatArtistCredit,
+  isSoleAlbumArtistCredit,
+  withFallbackArtistCredits,
+  type ArtistCreditEntry,
+} from "../../../lib/artistCredit.ts";
 import {
   CollectionHeader,
   CollectionPlayButtons,
@@ -75,7 +82,10 @@ import {
   usePlaylistBulkActions,
 } from "./playlists/usePlaylistBulkActions.ts";
 import { useWebSocketChannel } from "../hooks/useWebSocket";
-import { getReleaseGroupCoversBatch } from "../utils/api/endpoints/artists.ts";
+import {
+  getReleaseGroupCredits,
+  getReleaseGroupCoversBatch,
+} from "../utils/api/endpoints/artists.ts";
 import {
   clearLibraryPageCache,
   deleteAlbumFromLibrary,
@@ -1533,6 +1543,26 @@ function LibraryPage() {
     refetchIntervalInBackground: false,
   });
 
+  // Files tagged with only the album artist get their featured artists from MusicBrainz.
+  const albumCreditsMbid = !isPreviewLibrary ? libraryAlbum?.releaseGroupMbid || null : null;
+  const albumCreditsQuery = useQuery({
+    queryKey: queryKeys.releaseGroupCredits(albumCreditsMbid),
+    queryFn: ({ signal }) => getReleaseGroupCredits(albumCreditsMbid!, { signal }),
+    enabled: Boolean(albumCreditsMbid),
+    staleTime: 60 * 60 * 1000,
+  });
+  const libraryAlbumTracks = useMemo(
+    () =>
+      libraryAlbum
+        ? withFallbackArtistCredits(
+            getAlbumTracks(libraryAlbum),
+            albumCreditsQuery.data,
+            getArtistForAlbum(libraryAlbum),
+          )
+        : [],
+    [albumCreditsQuery.data, getAlbumTracks, getArtistForAlbum, libraryAlbum],
+  );
+
   useEffect(() => {
     if (!libraryAlbum || isPreviewLibrary) return;
     loadAlbumTracks(libraryAlbum).catch(() => {});
@@ -1892,6 +1922,7 @@ function LibraryPage() {
         id: track.id,
         title: track.title,
         artist: track.artistName || artist?.name || "Unknown Artist",
+        artistCredit: track.artistCredit || null,
         album: album?.title || track.albumName || "Unknown Album",
         src:
           file?.previewUrl ||
@@ -2364,7 +2395,7 @@ function LibraryPage() {
                 ? sortedTracks.length
                 : sortedGenres.length;
   const collectionTracks = useMemo(() => {
-    if (libraryAlbum) return getAlbumTracks(libraryAlbum);
+    if (libraryAlbum) return libraryAlbumTracks;
     if (section === "favorites") return favoriteTracks;
     if (section === "albums") return sortedAlbums.flatMap(getAlbumTracks);
     if (section === "tracks") return sortedTracks;
@@ -2375,6 +2406,7 @@ function LibraryPage() {
     filteredTracks,
     getAlbumTracks,
     libraryAlbum,
+    libraryAlbumTracks,
     ownedLibraryTracks,
     section,
     selectedGenre,
@@ -2419,8 +2451,24 @@ function LibraryPage() {
         );
         const active =
           String(currentTrack?.id) === String(track.id) && matchesSource(librarySource);
-        const artistName = track.artistName || artist?.name || "Unknown Artist";
+        const artistName =
+          formatArtistCredit(track.artistCredit) ||
+          track.artistName ||
+          artist?.name ||
+          "Unknown Artist";
         const albumName = album?.title || track.albumName || "Unknown Album";
+        const credit =
+          track.artistCredit && !isSoleAlbumArtistCredit(track.artistCredit, artist) ? (
+            <ArtistCredit
+              credit={track.artistCredit}
+              linkClassName="native-library-track__credit-link"
+              linkFor={(entry: ArtistCreditEntry) =>
+                isSoleAlbumArtistCredit([{ ...entry, joinPhrase: "" }], artist)
+                  ? libraryArtistPath(artist)
+                  : artistCreditPath(entry)
+              }
+            />
+          ) : null;
         const trackNumber = track.albums?.find(
           (entry) => String(entry.albumId) === String(album?.id),
         )?.trackNumber;
@@ -2532,6 +2580,8 @@ function LibraryPage() {
             </span>
           ) : null,
           subtitle: artistName,
+          credit: variant === "release" ? credit : null,
+          artistElement: credit,
           artist: {
             label: artistName,
             to: isAlbumArtistCredit(track, artist) ? libraryArtistPath(artist) : null,
@@ -2965,7 +3015,7 @@ function LibraryPage() {
   const renderLibraryAlbumDetail = () => {
     if (!libraryAlbum) return null;
     const artist = getArtistForAlbum(libraryAlbum);
-    const albumTracks = getAlbumTracks(libraryAlbum);
+    const albumTracks = libraryAlbumTracks;
     const availability = albumAvailability(libraryAlbum);
     const discoverArtist = hasMbid(artist) ? artist : null;
     const durationMs = albumTracks.reduce(

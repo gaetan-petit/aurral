@@ -52,6 +52,7 @@ export type TrackListRow = {
   timeMissing?: boolean;
   badge?: ReactNode;
   subtitle?: ReactNode;
+  credit?: ReactNode;
   trailing?: ReactNode;
   active?: boolean;
   missing?: boolean;
@@ -63,6 +64,7 @@ export type TrackListRow = {
   playDisabled?: boolean;
   cover?: TrackCoverField | null;
   artist?: TrackLinkField | null;
+  artistElement?: ReactNode;
   album?: TrackLinkField | null;
   menu?: Omit<ComponentProps<typeof LibraryItemMenu>, "label">;
   menuElement?: ReactNode;
@@ -165,6 +167,16 @@ function TrackCover({
     <span className="native-library-track__cover">
       {content}
       {overlay}
+    </span>
+  );
+}
+
+function TrackHeading({ credit, children }: { credit?: ReactNode; children: ReactNode }) {
+  if (!credit) return children;
+  return (
+    <span className="native-library-track__heading">
+      {children}
+      <span className="native-library-track__credit">{credit}</span>
     </span>
   );
 }
@@ -338,31 +350,39 @@ export function TrackList({
                   indicator={row.active ? <PlayingIndicator row={row} /> : null}
                 />
               ) : null}
-              <Tooltip content={row.title}>
-                {row.onPlay && !row.playDisabled && !selection ? (
-                  <button
-                    type="button"
-                    className="native-library-track__title"
-                    onClick={row.onPlay}
-                  >
-                    <span>
-                      {row.badge}
-                      {row.title}
+              <TrackHeading credit={row.credit}>
+                <Tooltip content={row.title}>
+                  {row.onPlay && !row.playDisabled && !selection ? (
+                    <button
+                      type="button"
+                      className="native-library-track__title"
+                      onClick={row.onPlay}
+                    >
+                      <span>
+                        {row.badge}
+                        {row.title}
+                      </span>
+                      {row.subtitle && !row.credit ? <small>{row.subtitle}</small> : null}
+                    </button>
+                  ) : (
+                    <span className="native-library-track__title">
+                      <span>
+                        {row.badge}
+                        {row.title}
+                      </span>
+                      {row.subtitle && !row.credit ? <small>{row.subtitle}</small> : null}
                     </span>
-                    {row.subtitle ? <small>{row.subtitle}</small> : null}
-                  </button>
-                ) : (
-                  <span className="native-library-track__title">
-                    <span>
-                      {row.badge}
-                      {row.title}
-                    </span>
-                    {row.subtitle ? <small>{row.subtitle}</small> : null}
-                  </span>
-                )}
-              </Tooltip>
+                  )}
+                </Tooltip>
+              </TrackHeading>
               {isCollection ? (
-                <TrackLink link={row.artist} className="native-library-track__artist" />
+                row.artistElement ? (
+                  <span className="native-library-track__artist native-library-track__artist-credit">
+                    {row.artistElement}
+                  </span>
+                ) : (
+                  <TrackLink link={row.artist} className="native-library-track__artist" />
+                )
               ) : null}
               {isCollection ? (
                 <TrackLink link={row.album} className="native-library-track__album" />

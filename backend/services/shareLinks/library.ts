@@ -12,6 +12,7 @@ import {
   type StaticPlaylist,
 } from "../playlists/flowPlaylistConfig.ts";
 import { findSharedTrack } from "../../../lib/shareManifest.ts";
+import { formatArtistCredit } from "../../../lib/artistCredit.ts";
 
 const BROWSER_FORMATS = new Set(["mp3", "flac", "ogg", "oga", "opus", "wav", "aac", "webm"]);
 
@@ -117,7 +118,8 @@ function shareTracks(library: ReturnType<typeof loadLibrary>, preferredPaths = n
           albumId: album.id,
           trackId: track.id,
           title: track.title,
-          artistName: track.artistName || artist?.name || "",
+          artistName:
+            formatArtistCredit(track.artistCredit) || track.artistName || artist?.name || "",
           albumTitle: album.title,
           artistMbid: artist?.mbid || null,
           albumMbid: album.releaseGroupMbid || null,

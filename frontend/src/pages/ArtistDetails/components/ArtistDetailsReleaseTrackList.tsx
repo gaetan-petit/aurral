@@ -3,6 +3,8 @@ import { MoreVertical, Plus } from "../../../components/icons";
 import { DotLoader, DownloadingIcon } from "../../../components/DotLoader";
 import SearchLibraryCheck from "../../../components/SearchLibraryCheck";
 import { TrackList, type TrackListRow } from "../../../components/TrackList";
+import { ArtistCredit } from "../../../components/ArtistCredit";
+import { isSoleAlbumArtistCredit } from "../../../../../lib/artistCredit.ts";
 import { TrackPlaylistSubmenu } from "./TrackPlaylistMenu";
 import { useAlbumTrackListToolbar } from "../../../hooks/useAlbumTrackListToolbar";
 import { useAudioQueue } from "../../../contexts/audioQueueContext";
@@ -52,6 +54,7 @@ export function useReleasePreviewQueue({
           id: releaseTrackId(track, trackKey, index),
           title: track?.title || track?.trackName,
           preview_url: track?.preview_url,
+          artistCredit: track?.artistCredit,
         },
         artistName,
         {
@@ -71,7 +74,12 @@ export function useReleasePreviewQueue({
     [normalizeTrack, tracks],
   );
   const toolbar = useAlbumTrackListToolbar({ getQueueTracks, playbackSource });
-  return { ...toolbar, normalizeTrack, getQueueTracks };
+  return {
+    ...toolbar,
+    normalizeTrack,
+    getQueueTracks,
+    albumArtist: { mbid: artistMbid, name: artistName },
+  };
 }
 
 export function ArtistDetailsReleaseTrackList({
@@ -197,6 +205,13 @@ export function ArtistDetailsReleaseTrackList({
       loading: isCurrent && isLoading,
       onPlay: canPlay ? () => handlePlay(track, index) : null,
       badge: isOwned ? <SearchLibraryCheck size="discover" /> : null,
+      credit:
+        track.artistCredit && !isSoleAlbumArtistCredit(track.artistCredit, preview.albumArtist) ? (
+          <ArtistCredit
+            credit={track.artistCredit}
+            linkClassName="native-library-track__credit-link"
+          />
+        ) : null,
       menu:
         items.length || onAddTrackToPlaylist
           ? {

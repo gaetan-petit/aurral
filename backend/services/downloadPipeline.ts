@@ -41,6 +41,7 @@ import { isPipelinePayloadActive } from "./downloadJobs/downloadCancellation.ts"
 import { deferForInactiveOwner } from "./downloadJobs/playlistOwnerStatus.ts";
 import { discardHeldFile } from "./downloadJobs/reviewFiles.ts";
 import { processShareDownload } from "./shareLinks/download.ts";
+import { warmReleaseTrackCredits } from "./trackArtistCredits.ts";
 
 // Runs one step of a download job: it picks the next enabled source in
 // priority order and hands the step to that source's adapter. Every source
@@ -506,6 +507,9 @@ async function processSourcePayload(payload: PipelinePayload): Promise<PipelineP
   }
   if (payload.albumGrab === true && payload.releaseMbid === undefined) {
     return payload.phase === "search" ? null : awaitAttemptRelease(payload);
+  }
+  if (payload.phase === "search") {
+    warmReleaseTrackCredits(payload.releaseMbid || currentJob?.releaseMbid);
   }
   if (
     payload.albumGrab === true &&

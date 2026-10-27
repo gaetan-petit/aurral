@@ -46,6 +46,23 @@ test("previews and playlist tracks keep their cover so the player and album-art 
   assert.equal(editorialTrack.artwork, "https://c/editorial.jpg");
 });
 
+test("a release track's own artist credit replaces the page artist in the queue", () => {
+  const artistCredit = [
+    { name: "Host", mbid: null, joinPhrase: " feat. " },
+    { name: "Guest", mbid: null, joinPhrase: "" },
+  ];
+  const preview = normalizePreviewTrack(
+    { id: "3", title: "Song", preview_url: "https://p/3.mp3", artistCredit },
+    "Page Artist",
+  );
+  assert.equal(preview.artist, "Host feat. Guest");
+  assert.deepEqual(preview.artistCredit, artistCredit);
+
+  const plain = normalizePreviewTrack({ id: "4", title: "Song" }, "Page Artist");
+  assert.equal(plain.artist, "Page Artist");
+  assert.equal(plain.artistCredit, null);
+});
+
 test("a server-relative preview plays from the configured API address", (t) => {
   vi.stubEnv("VITE_API_URL", "https://music.example/aurral/api");
   t.onTestFinished(() => {

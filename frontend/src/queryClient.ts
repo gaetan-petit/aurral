@@ -186,6 +186,7 @@ export const queryKeys = {
     id,
     context,
   ],
+  releaseGroupCredits: (id: MaybeText): QueryKey => ["artists", "release-group-credits", id],
   releaseGroupRatings: (ids: string[]): QueryKey => [
     "artists",
     "release-group-ratings",

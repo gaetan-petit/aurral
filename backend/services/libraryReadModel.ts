@@ -9,6 +9,7 @@ import {
 } from "./libraryQueryService.ts";
 import { getManagedByMap, type LibraryOwner } from "./libraryManagementStore.ts";
 import { selectCanonicalFile } from "./canonicalFileSelector.ts";
+import type { ArtistCredit } from "../../lib/artistCredit.ts";
 
 type ManagementByEntityId = ReturnType<typeof getManagedByMap>;
 
@@ -66,6 +67,7 @@ type LibraryTrackRecord = {
   mbid: string | null;
   title: string;
   artistName: string | null;
+  artistCredit?: ArtistCredit | null;
   metadata: LibraryMetadata | null;
   monitored: boolean;
   keepFile: boolean;
@@ -217,6 +219,8 @@ const buildTrack = (track: LibraryTrackRecord, album: ReadAlbum) => {
     trackName: track.title,
     title: track.title,
     trackNumber: relation?.trackNumber || 0,
+    artistName: track.artistName || null,
+    artistCredit: track.artistCredit || null,
     path: file?.path || null,
     hasFile: Boolean(file?.available),
     size: Number(file?.size || 0),
