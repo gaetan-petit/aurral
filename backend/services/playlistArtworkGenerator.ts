@@ -50,21 +50,6 @@ export type PlaylistCoverPick = {
   template: PlaylistCoverTemplate;
 };
 
-export function parsePlaylistCoverPick(value: unknown): PlaylistCoverPick | null {
-  if (!value || typeof value !== "object") return null;
-  const style: unknown = Reflect.get(value, "style");
-  const artistKey: unknown = Reflect.get(value, "artistKey");
-  const template = PLAYLIST_COVER_TEMPLATES.find(
-    (candidate) => candidate === Reflect.get(value, "template"),
-  );
-  if ((style !== "artist" && style !== "simple") || !template) return null;
-  return {
-    style,
-    artistKey: typeof artistKey === "string" && artistKey ? artistKey : null,
-    template,
-  };
-}
-
 function uniqueArtists(artists: PlaylistArtworkArtist[]) {
   const unique = new Map<string, PlaylistArtworkArtist>();
   for (const artist of artists) {

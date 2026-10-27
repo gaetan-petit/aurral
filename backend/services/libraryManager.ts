@@ -560,7 +560,7 @@ function scheduleLibraryReconciliation() {
   return scheduleLibraryScan({ includeLidarr: true });
 }
 
-export type MappedLibraryAlbum = ReturnType<typeof mapLibraryAlbum>;
+type MappedLibraryAlbum = ReturnType<typeof mapLibraryAlbum>;
 
 function mapLibraryAlbum(
   album: LibraryAlbumRecord,

@@ -10,7 +10,6 @@ import { libraryArtistsClient } from "../clients/libraryArtists.ts";
 import type { libraryArtworkClient } from "../clients/libraryArtwork.ts";
 import { libraryDownloadsClient } from "../clients/libraryDownloads.ts";
 import { libraryMiscClient } from "../clients/libraryMisc.ts";
-import type { libraryMonitoringClient } from "../clients/libraryMonitoring.ts";
 import { libraryTracksClient } from "../clients/libraryTracks.ts";
 import { bumpLibraryPageGeneration, queryClient, queryKeys } from "../../../queryClient.ts";
 import { getLibraryOwnerConflict } from "../../libraryDestination.ts";
@@ -64,11 +63,6 @@ type ActiveDownloadStart = {
 export type LibraryPageResponse = InferResponseType<typeof libraryClient.canonical.$get, 200>;
 export type LibraryFavoritesResponse = InferResponseType<typeof libraryClient.favorites.$get, 200>;
 export type ArtistsInLibrary = InferResponseType<typeof libraryMiscClient.lookup.batch.$post, 200>;
-
-export type PreviewArtistMonitoringResponse = InferResponseType<
-  (typeof libraryMonitoringClient.artists)[":mbid"]["monitoring"]["preview"]["$post"],
-  200
->;
 
 export type AurralMonitoringResult = {
   monitored: boolean;

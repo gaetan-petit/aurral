@@ -33,32 +33,10 @@ export function asApiError(error: unknown): ApiError | undefined {
   return error instanceof Error ? error : undefined;
 }
 
-interface RequestConfig {
-  method?: string;
-  url?: string;
-  params?: Record<string, unknown>;
-  data?: unknown;
-  headers?: Record<string, string>;
-  signal?: AbortSignal;
-  timeout?: number;
-  keepalive?: boolean;
-}
-
 function joinUrl(baseURL: string, url: string) {
   if (!url) return baseURL;
   if (String(url).startsWith("http://") || String(url).startsWith("https://")) return url;
   return `${String(baseURL).replace(/\/+$/, "")}/${String(url).replace(/^\/+/, "")}`;
-}
-
-function appendParams(url: string, params: Record<string, unknown> | undefined) {
-  if (!params || typeof params !== "object") return url;
-  const search = new URLSearchParams();
-  for (const [key, value] of Object.entries(params)) {
-    if (value != null && value !== "") search.set(key, String(value));
-  }
-  const query = search.toString();
-  if (!query) return url;
-  return `${url}${url.includes("?") ? "&" : "?"}${query}`;
 }
 
 const REAUTH_COOLDOWN_MS = 30000;
@@ -126,48 +104,6 @@ async function ensureOk(res: Response, url: string) {
   throw error;
 }
 
-async function request(config: RequestConfig) {
-  const method = String(config.method || "GET").toUpperCase();
-  let url = appendParams(joinUrl(API_BASE_URL, config.url || ""), config.params);
-  const controller = new AbortController();
-  const callerSignal = config.signal;
-  const abortFromCaller = () => controller.abort(callerSignal?.reason);
-  if (callerSignal?.aborted) {
-    abortFromCaller();
-  } else {
-    callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
-  }
-  const timeoutMs = Number(config.timeout ?? REQUEST_TIMEOUT_MS);
-  const timer = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
-  const isBinaryData = config.data instanceof Blob || config.data instanceof FormData;
-  const headers: Record<string, string> = {
-    ...(isBinaryData ? {} : { "Content-Type": "application/json" }),
-    ...config.headers,
-  };
-  const token = getRequestToken();
-  if (token) headers.Authorization = `Bearer ${token}`;
-
-  try {
-    const init: RequestInit = { method, headers, signal: controller.signal, redirect: "manual" };
-    if (config.data != null && method !== "GET" && method !== "HEAD") {
-      if (typeof config.data === "string" || isBinaryData) {
-        init.body = config.data as BodyInit;
-      } else {
-        init.body = JSON.stringify(config.data);
-      }
-    }
-    if (config.keepalive && (typeof init.body !== "string" || init.body.length < 60_000)) {
-      init.keepalive = true;
-    }
-    const res = await ensureOk(await fetch(url, init), String(config.url || ""));
-    const data = await readBody(res);
-    return { status: res.status, statusText: res.statusText, headers: res.headers, data };
-  } finally {
-    if (timer) clearTimeout(timer);
-    callerSignal?.removeEventListener("abort", abortFromCaller);
-  }
-}
-
 export const apiFetchWithin =
   (timeoutMs: number) =>
   async (input: RequestInfo | URL, init: RequestInit = {}) => {
@@ -185,18 +121,6 @@ export const apiFetchWithin =
   };
 
 export const apiFetch = apiFetchWithin(REQUEST_TIMEOUT_MS);
-
-const api = {
-  get: (url: string, config: RequestConfig = {}) => request({ ...config, method: "GET", url }),
-  post: (url: string, data?: unknown, config: RequestConfig = {}) =>
-    request({ ...config, method: "POST", url, data }),
-  put: (url: string, data?: unknown, config: RequestConfig = {}) =>
-    request({ ...config, method: "PUT", url, data }),
-  patch: (url: string, data?: unknown, config: RequestConfig = {}) =>
-    request({ ...config, method: "PATCH", url, data }),
-  delete: (url: string, config: RequestConfig = {}) =>
-    request({ ...config, method: "DELETE", url }),
-};
 
 const AUTH_TOKEN_KEY = "auth_token";
 
@@ -304,19 +228,6 @@ export const fetchCoverWithMemo = async <T extends CoverCacheValue>(
   );
 };
 
-const responseData = <T>(req: Promise<{ data: unknown }>): Promise<T> =>
-  req.then((response) => response.data as T);
-export const getData = <T>(url: string, config?: RequestConfig): Promise<T> =>
-  responseData<T>(api.get(url, config));
-export const postData = <T>(url: string, data?: unknown, config?: RequestConfig): Promise<T> =>
-  responseData<T>(api.post(url, data, config));
-export const putData = <T>(url: string, data?: unknown, config?: RequestConfig): Promise<T> =>
-  responseData<T>(api.put(url, data, config));
-export const patchData = <T>(url: string, data?: unknown, config?: RequestConfig): Promise<T> =>
-  responseData<T>(api.patch(url, data, config));
-export const deleteData = <T>(url: string, config?: RequestConfig): Promise<T> =>
-  responseData<T>(api.delete(url, config));
-
 export const lidarrCredentialParams = (
   url: string | undefined,
   apiKey: string | undefined,
@@ -351,5 +262,3 @@ export const resolveAuthenticatedApiAssetUrl = (value: string | null | undefined
   const url = String(value || "");
   return url.startsWith("/api/") ? buildAuthenticatedApiUrl(url.replace(/^\/api/, "")) : url;
 };
-
-export default api;

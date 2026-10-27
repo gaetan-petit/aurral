@@ -12,7 +12,7 @@ const OUTPUT_FORMATS = {
 };
 
 type OutputFormat = keyof typeof OUTPUT_FORMATS;
-export type SubsonicStreamFormat = "" | "raw" | OutputFormat;
+type SubsonicStreamFormat = "" | "raw" | OutputFormat;
 type StreamOptions = { format: SubsonicStreamFormat; maxBitRate: number; timeOffset?: number };
 
 const isMissing = (error: unknown) => {
