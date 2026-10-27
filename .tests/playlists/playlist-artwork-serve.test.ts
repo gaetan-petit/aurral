@@ -24,12 +24,14 @@ const [
   { flowPlaylistConfig },
   { playlistManager },
   { app },
+  { createSession },
   { playlistOperationQueue },
   { processPlaylistOperation },
 ] = await Promise.all([
   import("../../backend/services/playlists/flowPlaylistConfig.ts"),
   import("../../backend/services/playlists/playlistManager.ts"),
   import("../../backend/app.ts"),
+  import("../../backend/config/session-helpers.ts"),
   import("../../backend/services/playlists/playlistOperationQueue.ts"),
   import("../../backend/services/playlists/playlistOperations.ts"),
 ]);
@@ -73,7 +75,6 @@ test("serves playlist artwork from a hidden data directory", async () => {
 test("a new flow or static playlist has its cover as soon as it is created, with no media server connected", async () => {
   dbOps.updateSettings({
     integrations: {},
-    playlistArtwork: { style: "aurral" },
     onboardingComplete: true,
   });
   userOps.createUser("curator", hashPassword("curator-password"), "admin");
@@ -107,6 +108,21 @@ test("a new flow or static playlist has its cover as soon as it is created, with
     const flowCover = await request(`/artwork/${flow.id}`);
     assert.equal(flowCover.status, 200);
     assert.equal(flowCover.type, "image/webp");
+    const initialStatus = await (await request("/status")).body.json();
+    const initialRevision = initialStatus.flows.find(
+      (entry: { id: string }) => entry.id === flow.id,
+    )?.artworkRevision;
+    const generated = await request(`/artwork/${flow.id}/generate`, { style: "simple" });
+    assert.equal(generated.status, 200);
+    assert.equal((await generated.body.json()).fallback, false);
+    const updatedStatus = await (await request("/status")).body.json();
+    const updatedRevision = updatedStatus.flows.find(
+      (entry: { id: string }) => entry.id === flow.id,
+    )?.artworkRevision;
+    assert.equal(typeof initialRevision, "number");
+    assert.ok(updatedRevision > initialRevision);
+    assert.equal((await request(`/artwork/${flow.id}/generate`, { style: "photo" })).status, 400);
+    assert.equal((await request(`/artwork/${flow.id}/restore`, {})).status, 400);
 
     const playlistResponse = await request("/shared-playlists", { name: "Fresh Playlist" });
     assert.equal(playlistResponse.status, 200);
@@ -116,6 +132,30 @@ test("a new flow or static playlist has its cover as soon as it is created, with
     const playlistCover = await request(`/artwork/${playlistId}`);
     assert.equal(playlistCover.status, 200);
     assert.equal(playlistCover.type, "image/webp");
+  } finally {
+    await server.close();
+  }
+});
+
+test("cover previews load from an image tag that can only carry the session token in the URL", async () => {
+  const user = userOps.getUserByUsername("curator");
+  assert.ok(user != null);
+  const playlist = flowPlaylistConfig.createStaticPlaylist({
+    name: "Wedding MegaMix",
+    ownerUserId: user.id,
+  });
+  const server = await createMockHttpServer(getRequestListener(app.fetch));
+  const query = new URLSearchParams({ title: playlist.name, style: "simple", template: "a3" });
+  const preview = (token?: string) => {
+    const params = new URLSearchParams(query);
+    if (token) params.set("token", token);
+    return fetch(`${server.url}/api/playlists/artwork/${playlist.id}/preview?${params}`);
+  };
+  try {
+    assert.equal((await preview()).status, 401);
+    const response = await preview(createSession(user.id).token);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("content-type"), "image/webp");
   } finally {
     await server.close();
   }

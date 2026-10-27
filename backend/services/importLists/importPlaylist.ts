@@ -5,7 +5,13 @@ import { listenbrainzPlaylistClient } from "./listenbrainzPlaylists.ts";
 import { lastfmStationClient } from "./lastfmStations.ts";
 import { youtubeMusicPlaylistClient } from "./youtubeMusicPlaylists.ts";
 import { getDeezerPlaylist } from "./deezerPlaylists.ts";
-import { normalizeImportSource, type PlaylistTrack } from "../playlists/flowPlaylistConfig.ts";
+import {
+  normalizeImportSource,
+  normalizePlaylistTrack,
+  type PlaylistTrack,
+} from "../playlists/flowPlaylistConfig.ts";
+import { loadRemoteShare } from "../shareLinks/remote.ts";
+import type { ShareManifest } from "../../../lib/shareManifest.ts";
 import { playlistOperationQueue } from "../playlists/playlistOperationQueue.ts";
 import { logger } from "../logger.ts";
 
@@ -23,11 +29,17 @@ type ImportStats = {
 type ImportExcluded = ReturnType<typeof parseSpotifyPlaylistItems>["excluded"];
 
 export type ImportedPlaylistTracks = {
+  artworkUrl?: string | null;
   tracks: PlaylistTrack[];
   stats: ImportStats;
   excluded?: ImportExcluded;
   user?: string;
 };
+
+export const sharedPlaylistTracks = (manifest: ShareManifest) =>
+  manifest.tracks
+    .map((track) => normalizePlaylistTrack({ ...track, albumName: track.albumTitle }))
+    .filter((track) => track !== null);
 
 export async function fetchImportedPlaylistTracks({
   provider,
@@ -45,7 +57,10 @@ export async function fetchImportedPlaylistTracks({
   if (provider === "spotify-playlist") {
     const items = await spotifyClient.listPlaylistTracks(userId, externalId, { forceRefresh });
     const parsed = parseSpotifyPlaylistItems(items);
-    return parsed;
+    const artworkUrl = await spotifyClient
+      .getPlaylistArtworkUrl(userId, externalId)
+      .catch(() => null);
+    return { ...parsed, artworkUrl };
   }
   if (provider === "listenbrainz-playlist") {
     return listenbrainzPlaylistClient.getPlaylistTracks(userId, externalId);
@@ -57,14 +72,30 @@ export async function fetchImportedPlaylistTracks({
     return lastfmStationClient.getStationTracks(userId, externalId, externalUsername);
   }
   if (provider === "youtube-music-playlist") {
-    const { tracks, stats, excluded } = await youtubeMusicPlaylistClient.getPlaylist(externalId, {
-      forceRefresh,
-    });
-    return { tracks, stats, excluded };
+    const { tracks, stats, excluded, artworkUrl } = await youtubeMusicPlaylistClient.getPlaylist(
+      externalId,
+      {
+        forceRefresh,
+      },
+    );
+    return { tracks, stats, excluded, artworkUrl };
   }
   if (provider === "deezer-playlist") {
-    const { tracks, stats, excluded } = await getDeezerPlaylist(externalId);
-    return { tracks, stats, excluded };
+    const { tracks, stats, excluded, artworkUrl } = await getDeezerPlaylist(externalId);
+    return { tracks, stats, excluded, artworkUrl };
+  }
+  if (provider === "aurral-share") {
+    const { manifest } = await loadRemoteShare(externalId);
+    if (manifest.kind !== "playlist") throw new Error("This share is not a playlist.");
+    const tracks = sharedPlaylistTracks(manifest);
+    return {
+      tracks,
+      stats: {
+        sourceItems: manifest.tracks.length,
+        incomplete: manifest.tracks.length - tracks.length,
+        duplicate: 0,
+      },
+    };
   }
   const error: CodedError = new Error(
     `Unsupported playlist import provider: ${provider || "unknown"}`,
@@ -78,6 +109,7 @@ export async function enqueueImportedPlaylist({
   name,
   sourceName,
   description = null,
+  artworkUrl = null,
   provider,
   externalId,
   externalUsername,
@@ -92,6 +124,7 @@ export async function enqueueImportedPlaylist({
   name: string;
   sourceName: string;
   description?: string | null;
+  artworkUrl?: string | null;
   provider: string;
   externalId: string;
   externalUsername?: string | null;
@@ -108,6 +141,7 @@ export async function enqueueImportedPlaylist({
     externalId,
     externalUsername,
     externalName: externalName || name,
+    artworkUrl,
     syncEnabled,
     syncIntervalHours: syncEnabled ? syncIntervalHours : 0,
     keepRemovedTracks,

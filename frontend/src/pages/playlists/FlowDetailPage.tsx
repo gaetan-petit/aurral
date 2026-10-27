@@ -1,14 +1,7 @@
+import { usePlaylistArtwork } from "../../hooks/usePlaylistArtwork.ts";
 import { lazy, Suspense, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
-import {
-  Check,
-  ClipboardCopy,
-  Download,
-  FilePlus2,
-  Pencil,
-  RefreshCw,
-  Trash2,
-} from "../../components/icons";
+import { Check, ClipboardCopy, FilePlus2, Pencil, RefreshCw, Trash2 } from "../../components/icons";
 import { DotLoader } from "../../components/DotLoader";
 import {
   SkeletonCollectionHeader,
@@ -54,10 +47,8 @@ import { usePlaylistTrackPlayback } from "./components/playlistTrackComponents.t
 import {
   describeFlowSchedule,
   formatFlowTrackLabel,
-  exportPlaylistTracklist,
   getFlowActivityMessage,
   optionMenuItem,
-  usePlaylistArtwork,
   usePlaylistTracks,
 } from "./playlistPageUtils";
 import { usePlaylistStatus } from "./usePlaylistStatus";
@@ -151,8 +142,6 @@ function FlowDetail({ flow }: { flow: Flow }) {
     },
   });
   const [editOpen, setEditOpen] = useState(false);
-  const [renaming, setRenaming] = useState(false);
-  const [renameError, setRenameError] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [running, setRunning] = useState(false);
@@ -223,22 +212,9 @@ function FlowDetail({ flow }: { flow: Flow }) {
   };
 
   const handleRename = async (name: string) => {
-    setRenaming(true);
-    setRenameError("");
-    try {
-      const nextName = String(name ?? "").trim();
-      await updateFlow({ name: nextName });
-      setDraft((current) => ({ ...current, name: nextName }));
-      showSuccess("Flow renamed");
-      await fetchStatus();
-      setEditOpen(false);
-    } catch (err) {
-      const message = getApiErrorMessage(err, "Failed to rename flow");
-      setRenameError(message);
-      showError(message);
-    } finally {
-      setRenaming(false);
-    }
+    await updateFlow({ name });
+    setDraft((current) => ({ ...current, name }));
+    await fetchStatus();
   };
 
   const handleDelete = async () => {
@@ -272,15 +248,6 @@ function FlowDetail({ flow }: { flow: Flow }) {
       await fetchStatus();
     } catch (err) {
       showError(getApiErrorMessage(err, "Failed to save flow as a playlist"));
-    }
-  };
-
-  const handleExport = () => {
-    try {
-      exportPlaylistTracklist(flow, tracks, { sourceFlowId: flow.id });
-      showSuccess(`Exported ${flow.name} tracklist`);
-    } catch (err) {
-      showError(asApiError(err)?.message || "Failed to export tracklist");
     }
   };
 
@@ -407,13 +374,6 @@ function FlowDetail({ flow }: { flow: Flow }) {
                   icon: FilePlus2,
                   disabled: Number(stats?.done || 0) === 0,
                   onSelect: handleConvertToStatic,
-                },
-                {
-                  id: "export",
-                  label: "Export tracklist",
-                  icon: Download,
-                  disabled: tracks.length === 0,
-                  onSelect: handleExport,
                 },
                 optionMenuItem({
                   id: "scrobble",
@@ -554,18 +514,14 @@ function FlowDetail({ flow }: { flow: Flow }) {
         </div>
       </div>
 
-      <PlaylistEditModal
-        entry={flow}
-        title="Edit flow"
-        open={editOpen}
-        saving={renaming}
-        error={renameError}
-        onClose={() => {
-          setRenameError("");
-          setEditOpen(false);
-        }}
-        onRename={handleRename}
-      />
+      {editOpen ? (
+        <PlaylistEditModal
+          entry={flow}
+          title="Edit flow"
+          onClose={() => setEditOpen(false)}
+          onRename={handleRename}
+        />
+      ) : null}
       <ConfirmModal
         open={confirmDelete}
         title={`Delete ${flow.name}?`}

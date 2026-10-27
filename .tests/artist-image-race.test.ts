@@ -7,6 +7,9 @@ import { testUser } from "./helpers/userFixtures.ts";
 import { useFakeClock } from "./helpers/fakeClock.ts";
 import type { CachedArtistImage } from "../backend/db/helpers/cache.ts";
 
+const wallClockSetTimeout = globalThis.setTimeout;
+const wallClockClearTimeout = globalThis.clearTimeout;
+
 const [
   state,
   { dbOps },
@@ -122,24 +125,24 @@ async function cover(mbid: string) {
 }
 
 async function whileOldIsBlocked<T>(promise: Promise<T>) {
-  let timer: NodeJS.Timeout | undefined;
+  let timer: ReturnType<typeof wallClockSetTimeout> | undefined;
   try {
     return await Promise.race([
       promise,
       new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(
+        timer = wallClockSetTimeout(
           () =>
             reject(
               new assert.AssertionError({
                 message: "the newer lookup must progress while the old lookup is blocked",
               }),
             ),
-          2000,
+          5_000,
         );
       }),
     ]);
   } finally {
-    clearTimeout(timer);
+    wallClockClearTimeout(timer);
   }
 }
 

@@ -36,7 +36,6 @@ export const appSettingsPatch = v.object({
   downloadFolderPath: v.optional(v.nullable(v.string())),
   pathMappings: v.optional(v.unknown()),
   security: v.optional(objectValue),
-  playlistArtwork: v.optional(objectValue),
   missingTrackSearch: v.optional(v.unknown()),
   inbox: v.optional(objectValue),
   dateTimeFormat: v.optional(v.unknown()),
@@ -412,7 +411,6 @@ export async function saveAppSettings(
     downloadFolderPath,
     pathMappings,
     security,
-    playlistArtwork,
     missingTrackSearch,
     inbox,
     dateTimeFormat,
@@ -551,13 +549,6 @@ export async function saveAppSettings(
                 defaultData.settings.security.localNetworkBypass,
           }
         : currentSettings.security || defaultData.settings.security,
-    playlistArtwork:
-      playlistArtwork !== undefined
-        ? {
-            ...(currentSettings.playlistArtwork || defaultData.settings.playlistArtwork),
-            ...playlistArtwork,
-          }
-        : currentSettings.playlistArtwork || defaultData.settings.playlistArtwork,
     missingTrackSearch: missingTrackSearchPatch
       ? { ...currentSettings.missingTrackSearch, ...missingTrackSearchPatch }
       : currentSettings.missingTrackSearch,

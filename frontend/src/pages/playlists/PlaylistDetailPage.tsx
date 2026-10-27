@@ -1,6 +1,8 @@
+import { usePlaylistArtwork } from "../../hooks/usePlaylistArtwork.ts";
 import { useMemo, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
-import { Clock, Download, Pencil, RefreshCw, Trash2 } from "../../components/icons";
+import { Clock, Pencil, RefreshCw, Share, Trash2 } from "../../components/icons";
+import { useShareAction } from "../../hooks/useShareAction.ts";
 import { DotLoader } from "../../components/DotLoader";
 import {
   SkeletonCollectionHeader,
@@ -30,12 +32,10 @@ import { usePlaylistTrackPlayback } from "./components/playlistTrackComponents.t
 import {
   SYNC_INTERVAL_OPTIONS,
   SYNCABLE_IMPORT_PROVIDERS,
-  exportPlaylistTracklist,
   formatTrackTotal,
   getImportedProviderLabel,
   choiceMenuItem,
   optionMenuItem,
-  usePlaylistArtwork,
   usePlaylistTracks,
 } from "./playlistPageUtils";
 import { countAvailableTracks } from "./trackAvailability.ts";
@@ -124,6 +124,7 @@ function PlaylistDetail({ playlist, stats, staticPlaylists, fetchStatus }: Playl
   const { user } = useAuth();
   const { showSuccess, showError } = useToast();
   const { artworkUrlFor } = usePlaylistArtwork();
+  const share = useShareAction();
   const showTrackAvailability = playlist.showTrackAvailability === true;
   const {
     tracks: savedTracks,
@@ -147,8 +148,6 @@ function PlaylistDetail({ playlist, stats, staticPlaylists, fetchStatus }: Playl
   };
   const playback = usePlaylistTrackPlayback({ tracks, playbackSource });
   const [editOpen, setEditOpen] = useState(false);
-  const [renaming, setRenaming] = useState(false);
-  const [renameError, setRenameError] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -182,21 +181,8 @@ function PlaylistDetail({ playlist, stats, staticPlaylists, fetchStatus }: Playl
     );
 
   const handleRename = async (name: string) => {
-    setRenaming(true);
-    setRenameError("");
-    try {
-      await updatePlaylist({ name: String(name ?? "").trim() });
-      showSuccess("Playlist renamed");
-      await fetchStatus();
-      setEditOpen(false);
-    } catch (err) {
-      const message =
-        getApiErrorText(err, "message") || asApiError(err)?.message || "Failed to rename playlist";
-      setRenameError(message);
-      showError(message);
-    } finally {
-      setRenaming(false);
-    }
+    await updatePlaylist({ name });
+    await fetchStatus();
   };
 
   const handleDelete = async () => {
@@ -245,15 +231,6 @@ function PlaylistDetail({ playlist, stats, staticPlaylists, fetchStatus }: Playl
       showError(getApiErrorMessage(err, "Failed to sync playlist"));
     } finally {
       setSyncing(false);
-    }
-  };
-
-  const handleExport = async () => {
-    try {
-      exportPlaylistTracklist(playlist, tracks);
-      showSuccess(`Exported ${playlist.name} tracklist`);
-    } catch (err) {
-      showError(asApiError(err)?.message || "Failed to export tracklist");
     }
   };
 
@@ -370,17 +347,20 @@ function PlaylistDetail({ playlist, stats, staticPlaylists, fetchStatus }: Playl
               contextMenu={false}
               items={[
                 {
+                  id: "share",
+                  label: "Share playlist",
+                  icon: Share,
+                  onSelect: () =>
+                    share(
+                      { kind: "playlist", playlistId: playlist.id, title: playlist.name },
+                      playlist.name,
+                    ),
+                },
+                {
                   id: "edit",
                   label: "Edit details",
                   icon: Pencil,
                   onSelect: () => setEditOpen(true),
-                },
-                {
-                  id: "export",
-                  label: "Export tracklist",
-                  icon: Download,
-                  disabled: tracks.length === 0,
-                  onSelect: handleExport,
                 },
                 ...(isSyncable
                   ? [
@@ -447,18 +427,14 @@ function PlaylistDetail({ playlist, stats, staticPlaylists, fetchStatus }: Playl
         recordHistory={playlist.recordHistory !== false}
       />
 
-      <PlaylistEditModal
-        entry={playlist}
-        title="Edit playlist"
-        open={editOpen}
-        saving={renaming}
-        error={renameError}
-        onClose={() => {
-          setRenameError("");
-          setEditOpen(false);
-        }}
-        onRename={handleRename}
-      />
+      {editOpen ? (
+        <PlaylistEditModal
+          entry={playlist}
+          title="Edit playlist"
+          onClose={() => setEditOpen(false)}
+          onRename={handleRename}
+        />
+      ) : null}
       <ConfirmModal
         open={confirmDelete}
         title={`Delete ${playlist.name}?`}

@@ -358,6 +358,15 @@ export interface MetadataProviderBudgetRow {
   rate_limited_until: number;
 }
 
+export interface MetadataRequestStateRow {
+  cache_key: string | null;
+  failure_count: number;
+  retry_after: number;
+  lease_token: string | null;
+  lease_until: number;
+  updated_at: number;
+}
+
 export interface MetadataResponseCacheRow {
   cache_key: string | null;
   response: Buffer;
@@ -488,6 +497,12 @@ export interface SettingsRow {
   value: string;
 }
 
+export interface ShareDownloadsRow {
+  job_id: string | null;
+  share_url: string;
+  track_path: string;
+}
+
 export interface ShareLinksRow {
   id: number;
   token: string;
@@ -501,6 +516,8 @@ export interface ShareLinksRow {
   allow_download: number;
   expires_at: number | null;
   created_at: number;
+  manifest: string | null;
+  share_files: number;
 }
 
 export interface SlskdTransferHistoryRow {

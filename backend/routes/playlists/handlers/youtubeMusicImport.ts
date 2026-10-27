@@ -91,6 +91,7 @@ export default new Hono<AppEnv>()
           externalName: playlist.name,
           tracks: playlist.tracks,
           sourceStats: playlist.stats,
+          artworkUrl: playlist.artworkUrl,
           syncEnabled,
           syncIntervalHours,
           keepRemovedTracks,

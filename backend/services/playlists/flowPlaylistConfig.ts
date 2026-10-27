@@ -2,6 +2,7 @@ import { randomBytes, randomUUID } from "crypto";
 import { dbOps } from "../../db/helpers/index.ts";
 import { downloadTracker } from "../downloadJobs/downloadTracker.ts";
 import { getDiscoverPlaylistPreset } from "../../config/discoverPlaylistPresets.ts";
+import { deletePlaylistArtworkState } from "../playlistArtworkState.ts";
 import { UUID_REGEX } from "../../../lib/uuid.ts";
 import type { RequestUser } from "../../middleware/requestUser.ts";
 
@@ -70,6 +71,7 @@ export interface FlowUpdates {
 }
 
 export interface StoredImportSource {
+  artworkUrl?: unknown;
   provider?: unknown;
   externalId?: unknown;
   externalUsername?: unknown;
@@ -86,15 +88,12 @@ export interface PlaylistTrackInput {
   artistName?: unknown;
   artist?: unknown;
   artist_name?: unknown;
-  "Artist Name(s)"?: unknown;
   trackName?: unknown;
   title?: unknown;
   name?: unknown;
   track?: unknown;
-  "Track Name"?: unknown;
   albumName?: unknown;
   album?: unknown;
-  "Album Name"?: unknown;
   artistMbid?: unknown;
   artistId?: unknown;
   albumMbid?: unknown;
@@ -158,6 +157,7 @@ export const IMPORT_SOURCE_PROVIDERS = new Set([
   "lastfm-station",
   "youtube-music-playlist",
   "deezer-playlist",
+  "aurral-share",
 ]);
 const DEFAULT_MIX = { discover: 34, mix: 33, trending: 33, focus: 0 };
 export const DEFAULT_SIZE = 30;
@@ -442,14 +442,12 @@ const positiveInteger = (value: unknown) =>
 
 export const normalizePlaylistTrack = (track: PlaylistTrackInput | null | undefined) => {
   if (!track || typeof track !== "object" || Array.isArray(track)) return null;
-  const artistName = String(
-    track.artistName ?? track.artist ?? track.artist_name ?? track["Artist Name(s)"] ?? "",
-  ).trim();
+  const artistName = String(track.artistName ?? track.artist ?? track.artist_name ?? "").trim();
   const trackName = String(
-    track.trackName ?? track.title ?? track.name ?? track.track ?? track["Track Name"] ?? "",
+    track.trackName ?? track.title ?? track.name ?? track.track ?? "",
   ).trim();
   if (!artistName || !trackName) return null;
-  const albumName = String(track.albumName ?? track.album ?? track["Album Name"] ?? "").trim();
+  const albumName = String(track.albumName ?? track.album ?? "").trim();
   const artistMbid = String(track.artistMbid ?? track.artistId ?? "").trim();
   const albumMbid = String(track.albumMbid ?? track.releaseGroupMbid ?? track.albumId ?? "").trim();
   const trackMbid = String(
@@ -571,6 +569,22 @@ export const pairJobsWithPlaylistTracks = <T extends PlaylistJob>(
   ];
 };
 
+export function playlistJobEntries(
+  playlist: { id: string; tracks?: PlaylistTrackInput[] } | null | undefined,
+) {
+  if (!playlist) return [];
+  const referencedJobs = (playlist.tracks || [])
+    .map((track) =>
+      track?.canonicalJobId ? downloadTracker.getJob(String(track.canonicalJobId)) : null,
+    )
+    .filter((job) => job !== null);
+  const jobs = [...referencedJobs, ...downloadTracker.getByPlaylistType(playlist.id)];
+  const uniqueJobs = jobs.filter(
+    (job, index, values) => values.findIndex((candidate) => candidate.id === job.id) === index,
+  );
+  return pairJobsWithPlaylistTracks(uniqueJobs, playlist.tracks);
+}
+
 export const orderJobsByPlaylistTracks = <T extends PlaylistJob>(
   jobs: T[] | null | undefined,
   tracks: PlaylistTrackInput[] | null | undefined,
@@ -582,7 +596,7 @@ export const dedupePlaylistTracks = (tracks: PlaylistTrackInput[] | null | undef
   for (const track of Array.isArray(tracks) ? tracks : []) {
     const normalizedTrack = normalizePlaylistTrack(track);
     if (!normalizedTrack) continue;
-    const identity = buildPlaylistTrackIdentity(normalizedTrack);
+    const identity = `${buildPlaylistTrackIdentity(normalizedTrack)}\u0001${normalizedTrack.membershipId || ""}`;
     if (seen.has(identity)) continue;
     seen.add(identity);
     uniqueTracks.push(normalizedTrack);
@@ -662,6 +676,10 @@ export function normalizeImportSource(value: StoredImportSource | null | undefin
       ? { externalUsername: String(value.externalUsername || "").trim() || null }
       : {}),
     externalName: String(value.externalName || "").trim() || null,
+    artworkUrl:
+      typeof value.artworkUrl === "string" && /^https?:\/\//i.test(value.artworkUrl)
+        ? value.artworkUrl
+        : null,
     syncEnabled: hasSync,
     syncIntervalHours: hasSync ? Math.min(Math.max(Math.round(syncIntervalHours), 1), 168) : 0,
     keepRemovedTracks: value.keepRemovedTracks !== false,
@@ -1058,6 +1076,7 @@ export const flowPlaylistConfig = {
     const next = flows.filter((flow) => flow.id !== flowId);
     if (next.length === flows.length) return false;
     setFlows(next);
+    deletePlaylistArtworkState(flowId);
     return true;
   },
 
@@ -1079,8 +1098,10 @@ export const flowPlaylistConfig = {
     const index = flows.findIndex((flow) => flow.id === flowId);
     if (index === -1) return null;
     const flow = { ...flows[index] };
-    flow.lastRunAt =
-      lastRunAt != null && Number.isFinite(Number(lastRunAt)) ? Number(lastRunAt) : Date.now();
+    flow.lastRunAt = Math.max(
+      lastRunAt != null && Number.isFinite(Number(lastRunAt)) ? Number(lastRunAt) : Date.now(),
+      (flow.lastRunAt ?? 0) + 1,
+    );
     flows[index] = flow;
     setFlows(flows);
     return flow;
@@ -1262,6 +1283,7 @@ export const flowPlaylistConfig = {
     const next = playlists.filter((playlist) => playlist.id !== playlistId);
     if (next.length === playlists.length) return false;
     setStaticPlaylists(next);
+    deletePlaylistArtworkState(playlistId);
     return true;
   },
 };

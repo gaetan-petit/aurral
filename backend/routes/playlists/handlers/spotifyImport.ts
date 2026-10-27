@@ -217,7 +217,7 @@ export default new Hono<AppEnv>()
         if (!name) {
           return c.json({ error: "name is required" }, 400);
         }
-        const { tracks, stats } = await fetchImportedPlaylistTracks({
+        const { tracks, stats, artworkUrl } = await fetchImportedPlaylistTracks({
           provider: "spotify-playlist",
           userId: c.var.user.id,
           externalId: playlistId,
@@ -232,6 +232,7 @@ export default new Hono<AppEnv>()
           externalName,
           tracks,
           sourceStats: stats,
+          artworkUrl,
           syncEnabled,
           syncIntervalHours,
           keepRemovedTracks,

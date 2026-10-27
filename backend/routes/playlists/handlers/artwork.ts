@@ -16,6 +16,9 @@ import { validate } from "../../../middleware/validate.ts";
 import { asAppError } from "../../../../lib/errors.ts";
 import { sendFile } from "../../../services/fileResponses.ts";
 import { sendViaNode } from "../../shared/sendViaNode.ts";
+import { getArtworkContentTypeForExtension } from "../../../services/playlistArtworkGenerator.ts";
+import { getPlaylistArtworkState } from "../../../services/playlistArtworkState.ts";
+import { PLAYLIST_COVER_TEMPLATES } from "../../../services/playlistCoverTemplates.ts";
 import {
   canAccessJobThroughPlaylist,
   canAccessPlaylistType,
@@ -81,6 +84,23 @@ const requireAccessibleJob = createMiddleware<AppEnv>(async (c, next) => {
 
 const trackArtworkQuery = validate("query", v.object({ playlistId: v.optional(v.string()) }));
 
+const coverStyle = v.picklist(["artist", "simple"], "Choose artist or simple cover art");
+
+const coverPick = {
+  style: coverStyle,
+  artistKey: v.optional(
+    v.pipe(
+      v.nullable(v.string()),
+      v.transform((key) => key || null),
+    ),
+    null,
+  ),
+  template: v.picklist(PLAYLIST_COVER_TEMPLATES, "Invalid cover choice"),
+};
+
+const badRequest = <E extends AppEnv>(c: Context<E>, error: unknown, fallback: string) =>
+  c.json({ error: "Bad Request", message: asAppError(error)?.message || fallback }, 400);
+
 export default new Hono<AppEnv>()
   .basePath("/playlists")
   .get("/artwork/:playlistId", requireStreamAuth, requireFlowAccessIfSignedIn, async (c) => {
@@ -92,8 +112,6 @@ export default new Hono<AppEnv>()
     if (!artwork) {
       return c.json({ error: "Playlist artwork not found" }, 404);
     }
-    const { getArtworkContentTypeForExtension } =
-      await import("../../../services/playlistArtworkGenerator.ts");
     c.header("Cache-Control", "private, no-cache, must-revalidate");
     const sent = await sendViaNode(c, sendFile, artwork.safePath, {
       contentType: getArtworkContentTypeForExtension(artwork.extension),
@@ -114,10 +132,7 @@ export default new Hono<AppEnv>()
       await playlistManager.saveArtworkUpload(playlistId, image);
       return c.json({ ok: true }, 200);
     } catch (error) {
-      return c.json(
-        { error: "Bad Request", message: asAppError(error)?.message || "Failed to save artwork" },
-        400,
-      );
+      return badRequest(c, error, "Failed to save artwork");
     }
   })
   .delete("/artwork/:playlistId", requireFlowAccess, async (c) => {
@@ -129,33 +144,92 @@ export default new Hono<AppEnv>()
       await playlistManager.removeArtwork(playlistId);
       return c.json({ ok: true }, 200);
     } catch (error) {
-      return c.json(
-        {
-          error: "Bad Request",
-          message: asAppError(error)?.message || "Failed to remove artwork",
-        },
-        400,
-      );
+      return badRequest(c, error, "Failed to remove artwork");
     }
   })
-  .post("/artwork/:playlistId/generate", requireFlowAccess, async (c) => {
+  .get(
+    "/artwork/:playlistId/preview",
+    requireStreamAuth,
+    requireFlowAccessIfSignedIn,
+    validate("query", v.object({ ...coverPick, title: v.optional(v.string()) })),
+    async (c) => {
+      const playlistId = c.req.param("playlistId");
+      if (!canAccessPlaylistType(c.var.user, playlistId)) {
+        return c.json({ error: "Playlist artwork not found" }, 404);
+      }
+      const { title = "", ...pick } = c.req.valid("query");
+      try {
+        const image = await playlistManager.previewArtwork(playlistId, title.slice(0, 200), pick);
+        return c.body(new Uint8Array(image), 200, {
+          "Content-Type": "image/webp",
+          "Cache-Control": "private, max-age=3600",
+        });
+      } catch (error) {
+        return badRequest(c, error, "Failed to preview cover");
+      }
+    },
+  )
+  .get("/artwork/:playlistId/pick", requireFlowAccess, (c) => {
+    const playlistId = c.req.param("playlistId");
+    if (!canAccessPlaylistType(c.var.user, playlistId)) {
+      return c.json({ error: "Playlist not found" }, 404);
+    }
+    return c.json({ pick: playlistManager.getArtworkPick(playlistId) }, 200);
+  })
+  .post(
+    "/artwork/:playlistId/shuffle",
+    requireFlowAccess,
+    validate("json", v.object({ style: coverStyle, previous: v.nullish(v.object(coverPick)) })),
+    async (c) => {
+      const playlistId = c.req.param("playlistId");
+      if (!canAccessPlaylistType(c.var.user, playlistId)) {
+        return c.json({ error: "Playlist not found" }, 404);
+      }
+      const { style, previous } = c.req.valid("json");
+      try {
+        const pick = await playlistManager.shuffleArtwork(playlistId, style, previous ?? null);
+        return c.json({ pick }, 200);
+      } catch (error) {
+        return badRequest(c, error, "Failed to shuffle cover");
+      }
+    },
+  )
+  .post("/artwork/:playlistId/restore", requireFlowAccess, async (c) => {
     const playlistId = c.req.param("playlistId");
     if (!canAccessPlaylistType(c.var.user, playlistId)) {
       return c.json({ error: "Playlist not found" }, 404);
     }
     try {
-      await playlistManager.generateArtwork(playlistId);
+      await playlistManager.restoreOriginalArtwork(playlistId);
       return c.json({ ok: true }, 200);
     } catch (error) {
-      return c.json(
-        {
-          error: "Bad Request",
-          message: asAppError(error)?.message || "Failed to generate artwork",
-        },
-        400,
-      );
+      return badRequest(c, error, "Failed to restore original cover");
     }
   })
+  .post(
+    "/artwork/:playlistId/generate",
+    requireFlowAccess,
+    validate(
+      "json",
+      v.object({ style: v.optional(coverStyle, "artist"), pick: v.nullish(v.object(coverPick)) }),
+    ),
+    async (c) => {
+      const playlistId = c.req.param("playlistId");
+      if (!canAccessPlaylistType(c.var.user, playlistId)) {
+        return c.json({ error: "Playlist not found" }, 404);
+      }
+      const { style, pick } = c.req.valid("json");
+      try {
+        await playlistManager.generateArtwork(playlistId, style, pick ?? null);
+        return c.json(
+          { ok: true, fallback: getPlaylistArtworkState(playlistId)?.fallbackSignature != null },
+          200,
+        );
+      } catch (error) {
+        return badRequest(c, error, "Failed to generate artwork");
+      }
+    },
+  )
   .get("/track-artwork/:jobId", async (c) => {
     if (!c.var.user && isAuthRequiredByConfig()) {
       return c.json({ error: "Unauthorized" }, 401);

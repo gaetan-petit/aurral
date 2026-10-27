@@ -44,6 +44,7 @@ import {
 } from "../downloadSourceService.ts";
 import { isPipelinePayloadActive } from "./downloadCancellation.ts";
 import { asAppError } from "../../../lib/errors.ts";
+import { getShareDownload } from "../shareLinks/downloadStore.ts";
 
 const DEFAULT_CONCURRENCY = 3;
 const SEARCH_SLOT_RECHECK_MS = 2000;
@@ -389,8 +390,8 @@ export class DownloadWorker {
       null,
       new Set(flowTrackSource._buildFeedbackExcludeKeys(flow?.ownerUserId)),
     );
-    flowPlaylistConfig.markLastRunAt(key);
     const jobIds = downloadTracker.addJobs(primaryTracks, key);
+    flowPlaylistConfig.markLastRunAt(key);
     return {
       tracksQueued: primaryTracks.length,
       jobIds,
@@ -420,8 +421,8 @@ export class DownloadWorker {
     }
     const plan = options?.plan || (await this.prepareFlowRunPlan(flow, options));
     const primaryTracks = Array.isArray(plan?.primaryTracks) ? plan.primaryTracks : [];
-    flowPlaylistConfig.markLastRunAt(key);
     const jobIds = downloadTracker.addJobs(primaryTracks, key);
+    flowPlaylistConfig.markLastRunAt(key);
     return {
       tracksQueued: primaryTracks.length,
       jobIds,
@@ -692,6 +693,11 @@ export class DownloadWorker {
     }
 
     try {
+      if (getShareDownload(job.id)) {
+        if (!downloadTracker.enqueueDownloadPipeline(job.id))
+          throw new Error("Could not queue the shared file transfer.");
+        return;
+      }
       if (job.upgradeForJobId) {
         await this._enqueueUpgrade(job, runGeneration);
         return;

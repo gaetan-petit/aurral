@@ -105,23 +105,16 @@ const playlistUpdate = v.object({
   ),
 });
 
-async function createOrImportStaticPlaylist<E extends AppEnv>(
+async function createStaticPlaylist<E extends AppEnv>(
   c: Context<E>,
   user: RequestUser,
   { name, sourceName, sourceFlowId, tracks }: v.InferOutput<typeof playlistInput>,
-  { requireTracks, label }: { requireTracks: boolean; label: string },
 ) {
   const safeName = String(name || "").trim();
   const normalizedTracks = Array.isArray(tracks) ? dedupePlaylistTracks(tracks) : [];
 
   if (!safeName) {
     return c.json({ error: "name is required" }, 400);
-  }
-  if (requireTracks && normalizedTracks.length === 0) {
-    return c.json(
-      { error: "tracks are required", message: "Import file must include at least one track" },
-      400,
-    );
   }
   if (tracks?.length && normalizedTracks.length === 0) {
     return c.json({ error: "tracks are invalid", message: "Add at least one valid track" }, 400);
@@ -130,7 +123,7 @@ async function createOrImportStaticPlaylist<E extends AppEnv>(
   const playlistId = randomUUID();
   const result = await playlistOperationQueue.enqueuePayload({
     kind: "shared-playlist-create",
-    label,
+    label: "shared-playlist:create",
     playlistId,
     name: safeName,
     sourceName,
@@ -273,29 +266,11 @@ export default new Hono<AppEnv>()
   })
   .post("/shared-playlists", requireFlowAccess, validate("json", playlistInput), async (c) => {
     try {
-      return await createOrImportStaticPlaylist(c, c.var.user, c.req.valid("json"), {
-        requireTracks: false,
-        label: "shared-playlist:create",
-      });
+      return await createStaticPlaylist(c, c.var.user, c.req.valid("json"));
     } catch (error) {
       return nameConflict(c, error, "Failed to create playlist");
     }
   })
-  .post(
-    "/shared-playlists/import",
-    requireFlowAccess,
-    validate("json", playlistInput),
-    async (c) => {
-      try {
-        return await createOrImportStaticPlaylist(c, c.var.user, c.req.valid("json"), {
-          requireTracks: true,
-          label: "shared-playlist:import",
-        });
-      } catch (error) {
-        return nameConflict(c, error, "Failed to import playlist");
-      }
-    },
-  )
   .post(
     "/shared-playlists/:playlistId/tracks",
     requireFlowAccess,

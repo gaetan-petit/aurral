@@ -3,10 +3,12 @@ export const API_CONTRACT = {
   features: [
     "discover",
     "flows",
+    "playlistCoverTemplates",
     "activity",
     "review",
     "trackDownloads",
     "linkSearch",
     "downloadCancel",
+    "shareImports",
   ],
 };

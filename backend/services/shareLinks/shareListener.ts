@@ -32,7 +32,13 @@ function loadShare(token: string) {
   const link = getLiveShareLink(token);
   const owner = link ? userOps.getUserById(link.userId) : null;
   const target = link && owner?.status === "active" ? resolveShareTarget(link) : null;
-  return link && target ? { link, target } : null;
+  if (target && link?.manifest) {
+    const paths = new Set(link.manifest.tracks.map((track) => track.path));
+    target.tracks = target.tracks.filter((track) =>
+      paths.has(`tracks/${track.albumId}/${track.trackId}`),
+    );
+  }
+  return link && target?.tracks.length ? { link, target } : null;
 }
 
 const findTrack = (target: ResolvedShareTarget, albumId: string, trackId: string) =>
@@ -124,6 +130,10 @@ export function createShareApp() {
           title: track.title,
           artistName: track.artistName,
           albumTitle: track.albumTitle,
+          artistMbid: track.artistMbid,
+          albumMbid: track.albumMbid,
+          releaseMbid: track.releaseMbid,
+          trackMbid: track.trackMbid,
           discNumber: track.discNumber,
           trackNumber: track.trackNumber,
           durationMs: track.durationMs,

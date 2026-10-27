@@ -144,6 +144,13 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_share_links_user
     ON share_links(user_id, created_at);
 
+  CREATE TABLE IF NOT EXISTS share_downloads (
+    job_id TEXT PRIMARY KEY,
+    share_url TEXT NOT NULL,
+    track_path TEXT NOT NULL,
+    FOREIGN KEY (job_id) REFERENCES playlist_download_jobs(id) ON DELETE CASCADE
+  );
+
   CREATE TABLE IF NOT EXISTS subsonic_play_queues (
     user_id INTEGER PRIMARY KEY,
     song_ids TEXT NOT NULL,
@@ -305,6 +312,15 @@ db.exec(`
     response BLOB NOT NULL,
     fresh_until INTEGER NOT NULL,
     stale_until INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS metadata_request_state (
+    cache_key TEXT PRIMARY KEY,
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    retry_after INTEGER NOT NULL DEFAULT 0,
+    lease_token TEXT,
+    lease_until INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0
   );
 
   CREATE TABLE IF NOT EXISTS artist_overrides (
@@ -607,6 +623,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_images_cache_cache_age ON images_cache(cache_age);
   CREATE INDEX IF NOT EXISTS idx_musicbrainz_artist_mbid_cache_updated_at ON musicbrainz_artist_mbid_cache(updated_at);
   CREATE INDEX IF NOT EXISTS idx_metadata_response_cache_stale_until ON metadata_response_cache(stale_until);
+  CREATE INDEX IF NOT EXISTS idx_metadata_request_state_retry_after ON metadata_request_state(retry_after);
   CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token);
   CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
   CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
@@ -627,6 +644,14 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_honker_task_runs_queue_started ON honker_task_runs(queue, started_at DESC);
   CREATE INDEX IF NOT EXISTS idx_honker_task_runs_job ON honker_task_runs(job_id, queue);
 `);
+
+const shareLinkColumns = db.prepare<[], { name: string }>("PRAGMA table_info(share_links)").all();
+if (!shareLinkColumns.some((column) => column.name === "manifest")) {
+  db.exec("ALTER TABLE share_links ADD COLUMN manifest TEXT");
+}
+if (!shareLinkColumns.some((column) => column.name === "share_files")) {
+  db.exec("ALTER TABLE share_links ADD COLUMN share_files INTEGER NOT NULL DEFAULT 1");
+}
 
 tryAddColumn("ALTER TABLE play_events ADD COLUMN album_key TEXT");
 

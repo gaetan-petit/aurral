@@ -500,6 +500,7 @@ async function adoptFlowSeed({ flowId, tracks = [] }: HonkerPayload = {}) {
     return flowSeedingWorker().seedFlowRunWithTracks(safeFlowId, latestFlow, normalizedTracks);
   });
   if (result?.skipped || result?.missing) return result;
+  playlistManager.requestPlaylistSync([safeFlowId]);
   await wakeDownloadWorker();
   recordFlowTracksGenerated({
     flowId: safeFlowId,
@@ -1033,6 +1034,8 @@ export async function processPlaylistOperation(payload: HonkerPayload = {}) {
     "weekly-flow-operation",
     async () => {
       switch (kind) {
+        case "share-import":
+          return (await import("../shareLinks/import.ts")).importShare(payload);
         case "manual-start-flow":
           return runFlowSeed(payload);
         case "scheduled-flow-refresh":

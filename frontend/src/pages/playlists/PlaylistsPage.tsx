@@ -1,4 +1,5 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { usePlaylistArtwork } from "../../hooks/usePlaylistArtwork.ts";
+import { lazy, Suspense, useEffect, useState, type ComponentProps } from "react";
 import { useLocation, useNavigate } from "react-router";
 import RouteLink from "../../components/RouteLink";
 import { ListMusic, MoreVertical, Plus, Upload } from "../../components/icons";
@@ -18,12 +19,13 @@ import {
   formatTrackTotal,
   getImportedProviderLabel,
   getImportedProviderLogo,
-  usePlaylistArtwork,
 } from "./playlistPageUtils";
 import { usePlaylistStatus } from "./usePlaylistStatus";
 import { useHiddenPlaylistTracks } from "./usePlaylistBulkActions.ts";
 import { playlistPath } from "../../navigation/playlistPaths";
 import { getApiErrorMessage } from "../onboardingUtils.tsx";
+
+type ImportRequest = Pick<ComponentProps<typeof PlaylistImportModal>, "initialShareUrl">;
 
 const PlaylistImportModal = lazy(() =>
   import("./import/PlaylistImportModal.tsx").then((m) => ({ default: m.PlaylistImportModal })),
@@ -53,16 +55,17 @@ export default function PlaylistsPage() {
     usePlaylistStatus();
   const hiddenTracks = useHiddenPlaylistTracks();
   const { artworkUrlFor } = usePlaylistArtwork();
-  const [importOpen, setImportOpen] = useState(false);
+  const [importRequest, setImportRequest] = useState<ImportRequest | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState("");
 
   useEffect(() => {
     if (!location.state?.openImport) return;
-    setImportOpen(true);
+    const shareUrl = location.state.shareUrl;
+    setImportRequest(typeof shareUrl === "string" ? { initialShareUrl: shareUrl } : {});
     navigate(location.pathname, { replace: true, state: {} });
-  }, [location.pathname, location.state?.openImport, navigate]);
+  }, [location.pathname, location.state, navigate]);
 
   const openCreate = () => {
     setCreateError("");
@@ -141,7 +144,7 @@ export default function PlaylistsPage() {
             <button
               type="button"
               className="btn btn-secondary btn-sm"
-              onClick={() => setImportOpen(true)}
+              onClick={() => setImportRequest({})}
             >
               <Upload aria-hidden="true" />
               Import playlist
@@ -213,7 +216,7 @@ export default function PlaylistsPage() {
                   id: "import",
                   label: "Import playlist",
                   icon: Upload,
-                  onSelect: () => setImportOpen(true),
+                  onSelect: () => setImportRequest({}),
                 },
               ]}
             />
@@ -238,11 +241,12 @@ export default function PlaylistsPage() {
         }}
         onSubmit={handleCreate}
       />
-      {importOpen ? (
+      {importRequest ? (
         <Suspense fallback={null}>
           <PlaylistImportModal
-            open={importOpen}
-            onClose={() => setImportOpen(false)}
+            {...importRequest}
+            open
+            onClose={() => setImportRequest(null)}
             onImported={fetchStatus}
             showError={showError}
             showSuccess={showSuccess}

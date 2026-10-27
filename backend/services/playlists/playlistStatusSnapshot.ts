@@ -1,3 +1,4 @@
+import { getPlaylistArtworkRevisions } from "../playlistArtworkState.ts";
 import { createHash } from "node:crypto";
 import { downloadTracker } from "../downloadJobs/downloadTracker.ts";
 import type { DownloadJob } from "../downloadJobs/downloadTracker.ts";
@@ -260,6 +261,9 @@ export function getPlaylistStatusSnapshot({ user = null }: { user?: RequestUser 
       importSource: playlist.importSource
         ? {
             provider: playlist.importSource.provider,
+            ...(playlist.importSource.artworkUrl
+              ? { artworkUrl: playlist.importSource.artworkUrl }
+              : {}),
             syncEnabled: playlist.importSource.syncEnabled === true,
             syncIntervalHours: playlist.importSource.syncEnabled
               ? playlist.importSource.syncIntervalHours
@@ -270,12 +274,15 @@ export function getPlaylistStatusSnapshot({ user = null }: { user?: RequestUser 
     };
   });
   const ownerMap = buildOwnerMap(flows, staticPlaylists);
+  const artworkRevisions = getPlaylistArtworkRevisions();
   const flowsWithOwners = flows.map((flow) => ({
     ...flow,
+    artworkRevision: artworkRevisions.get(flow.id),
     ownerUsername: ownerMap.get(Number(flow?.ownerUserId)) || null,
   }));
   const staticPlaylistsWithOwners = staticPlaylists.map((playlist) => ({
     ...playlist,
+    artworkRevision: artworkRevisions.get(playlist.id),
     ownerUsername: ownerMap.get(Number(playlist?.ownerUserId)) || null,
   }));
   const stats = aggregateStats(scopedStats, flowIds);

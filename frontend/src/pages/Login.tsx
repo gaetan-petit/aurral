@@ -8,6 +8,7 @@ import { getApiErrorBody, getApiErrorText } from "./onboardingUtils";
 import { parseResponse } from "hono/client";
 import { authClient } from "../utils/api/clients/auth.ts";
 import { DotLoader } from "../components/DotLoader";
+import { rememberShareImport } from "../utils/shareLink.ts";
 
 const buildApiUrl = (path: string) => {
   const basePath = getAppBasePath();
@@ -54,10 +55,12 @@ const Login = () => {
   const handleOidcLogin = () => {
     if (startingSso) return;
     setStartingSso(true);
+    rememberShareImport();
     window.location.assign(buildApiUrl("/api/auth/oidc/login"));
   };
 
   const handleGoogleLogin = () => {
+    rememberShareImport();
     window.location.assign(buildApiUrl("/api/auth/google/login"));
   };
 

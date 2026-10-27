@@ -6,6 +6,7 @@ import { parseResponse } from "hono/client";
 import { authClient } from "../utils/api/clients/auth.ts";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
 import { DotLoader } from "../components/DotLoader";
+import { consumeShareImport } from "../utils/shareLink.ts";
 
 const readHashParams = () => {
   const hash = String(window.location.hash || "").replace(/^#/, "");
@@ -68,7 +69,7 @@ const SsoComplete = () => {
       .then((refreshed) => {
         if (cancelled || refreshed === null) return;
         if (refreshed) {
-          navigate("/", { replace: true });
+          navigate(consumeShareImport() || "/", { replace: true });
         } else {
           setError("Signed in, but could not load your account. Try again.");
         }

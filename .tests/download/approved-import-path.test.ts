@@ -137,7 +137,6 @@ beforeEach(async () => {
     ...dbOps.getSettings(),
     integrations: {},
     downloadFolderPath: process.env.DOWNLOAD_FOLDER!,
-    playlistArtwork: { style: "aurral" },
   });
 });
 
