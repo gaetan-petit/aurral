@@ -2203,7 +2203,7 @@ function LibraryPage() {
         {
           kind: target.kind,
           libraryAlbumId: entity.id,
-          albumMbid: entity.releaseGroupMbid || entity.mbid,
+          albumMbid: entity.releaseGroupMbid,
           artistMbid: artist?.mbid,
           title: entity.title,
           artistName: artist?.name || entity.albumArtist || album?.albumArtist,
@@ -2219,7 +2219,7 @@ function LibraryPage() {
         libraryTrackId: entity.id,
         libraryAlbumId: album?.id,
         trackMbid: entity.mbid,
-        albumMbid: album?.releaseGroupMbid || album?.mbid,
+        albumMbid: album?.releaseGroupMbid,
         artistMbid: trackArtistMbid(entity, artist),
         title: entity.title,
         artistName: entity.artistName || artist?.name || album?.albumArtist,
@@ -2394,6 +2394,7 @@ function LibraryPage() {
     <TrackList
       label={label}
       variant={variant}
+      highlightKey={searchParams.get("track")}
       rows={tracks.map((track, index) => {
         const album = getAlbumForTrack(track);
         const artist = getArtistForAlbum(album);
@@ -3555,6 +3556,11 @@ function LibraryPage() {
             </h1>
           </div>
           <div className="native-library-header-actions">
+            {canAddTracks ? (
+              <RouteLink className="btn btn-secondary btn-sm" to="/share/import">
+                Import share
+              </RouteLink>
+            ) : null}
             {selectedGenre && (
               <RouteLink
                 className="btn btn-surface btn-sm"

@@ -35,6 +35,7 @@ type LookupEntry = { method?: string; url?: string; body: { secret: string; url:
 const lookupRequests: LookupEntry[] = [];
 const lookupWaiters = new Set<(entry: LookupEntry) => void>();
 let lookupStatus = 204;
+let resolvedManifest: unknown = null;
 const lookup = await createMockHttpServer((request, response) => {
   let body = "";
   request.on("data", (chunk) => {
@@ -48,6 +49,11 @@ const lookup = await createMockHttpServer((request, response) => {
     };
     lookupRequests.push(entry);
     for (const waiter of lookupWaiters) waiter(entry);
+    if (request.url?.startsWith("/api/shares/resolve?") && resolvedManifest) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ manifest: resolvedManifest, files: null }));
+      return;
+    }
     response.statusCode = lookupStatus;
     response.end();
   });
@@ -214,7 +220,7 @@ const api = express();
 api.use(express.json());
 api.use((req, res, next) => {
   const userId = Number(req.get("x-test-user"));
-  req.user = userOps.getUserById(userId) || undefined;
+  req.user = userId === 0 ? { ...owner, id: 0 } : userOps.getUserById(userId) || undefined;
   next();
 });
 api.use("/api/share-links", routes.default);
@@ -242,6 +248,26 @@ beforeEach(async () => {
   await writeFile(launchLog, "");
   lookupRequests.length = 0;
   lookupStatus = 204;
+  resolvedManifest = null;
+});
+
+test("opening a share is available without import permissions or an account and queues no downloads", async () => {
+  resolvedManifest = {
+    kind: "album",
+    title: firstAlbum.album.title,
+    artistName: artist.name,
+    albumMbid: FIRST_ALBUM_MBID,
+  };
+  for (const user of [stranger, { ...owner, id: 0 }]) {
+    const result = await callApi("POST", "/open", {
+      user,
+      body: { url: `${lookup.url}/s/s123456789abcdef` },
+    });
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    assert.equal(result.body.to, `/library/album/${firstAlbum.album.id}`);
+  }
+  assert.equal(db.prepare("SELECT 1 FROM share_links LIMIT 1").get(), undefined);
+  assert.equal(db.prepare("SELECT 1 FROM playlist_download_jobs LIMIT 1").get(), undefined);
 });
 
 async function callApi(
@@ -277,10 +303,23 @@ async function createLink(
   return response.body.link;
 }
 
-const tokenOf = (link: { url: string }) => link.url.split(".").at(-1);
+const tokenOf = (link: { url: string }) => {
+  const segment = new URL(link.url).pathname.slice(3);
+  if (/^s[A-Za-z0-9_-]{15}$/.test(segment))
+    return requireFixture(
+      db
+        .prepare<[string], { token: string }>(
+          "SELECT token FROM share_links WHERE substr(token, 1, 15) = ?",
+        )
+        .get(segment.slice(1)),
+    ).token;
+  return link.url.split(".").at(-1);
+};
 
 async function tunnelTarget() {
-  await nextLookup((entry) => entry.method === "PUT");
+  await nextLookup(
+    (entry) => entry.method === "PUT" && entry.url?.startsWith("/api/instances/") === true,
+  );
   const latest = (await launches()).at(-1);
   assert.ok(latest && isRunning(latest.pid), "cloudflared should run while a link is live");
   return latest.args[latest.args.indexOf("--url") + 1];
@@ -535,6 +574,7 @@ test("only Library items can be shared to listen", async () => {
     {
       trackCount: 4,
       tunnelAvailable: true,
+      totalTracks: null,
     },
   );
   const missingMbid = "79999999-9999-4999-8999-999999999999";
@@ -553,4 +593,308 @@ test("only Library items can be shared to listen", async () => {
     0,
   );
   assert.deepEqual(await launches(), []);
+});
+
+test("metadata-only shares publish without starting a tunnel", async () => {
+  const created = await callApi("POST", "", {
+    body: {
+      kind: "album",
+      manifest: { kind: "album", title: "An unowned album", artistName: "Another artist" },
+      shareFiles: false,
+      expiresIn: "7d",
+    },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.equal(created.body.link.shareFiles, false);
+  assert.equal(created.body.link.expiresAt, null);
+  assert.match(created.body.link.url, /\/s\/s[A-Za-z0-9_-]{15}$/);
+  assert.equal(lookupRequests.length, 1);
+  assert.match(lookupRequests[0].url || "", /^\/api\/shares\//);
+  assert.deepEqual(await launches(), []);
+  assert.equal((await callApi("DELETE", `/${created.body.link.id}`)).status, 204);
+  assert.equal(lookupRequests.at(-1)?.method, "DELETE");
+});
+
+test("stopping a share revokes local files even when hosted removal fails, and can be retried", async () => {
+  const created = await callApi("POST", "", {
+    body: {
+      kind: "album",
+      libraryAlbumId: String(firstAlbum.album.id),
+      manifest: { kind: "album", title: firstAlbum.album.title, artistName: artist.name },
+      shareFiles: true,
+      allowDownload: true,
+      expiresIn: "7d",
+    },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const { getLiveShareLink, getShareLinkSchedule } =
+    await import("../../backend/services/shareLinks/store.ts");
+  const token = tokenOf(created.body.link);
+  assert.ok(getLiveShareLink(token));
+  lookupStatus = 503;
+  assert.equal((await callApi("DELETE", `/${created.body.link.id}`)).status, 503);
+  assert.equal(getLiveShareLink(token), null);
+  assert.equal(getShareLinkSchedule().count, 0);
+  const remaining = (await callApi("GET", "")).body.links;
+  assert.equal(remaining.length, 1);
+  assert.equal(remaining[0].shareFiles, false);
+  assert.equal(remaining[0].allowDownload, false);
+  lookupStatus = 204;
+  assert.equal((await callApi("DELETE", `/${created.body.link.id}`)).status, 204);
+  assert.equal((await callApi("GET", "")).body.links.length, 0);
+});
+
+test("a release-only album never publishes its release ID as a release-group ID", async () => {
+  const releaseMbid = "78888888-8888-4888-8888-888888888888";
+  const album = media.upsertLibraryAlbum({
+    identityKey: `album:${releaseMbid}`,
+    artistId: artist.id,
+    title: "Release only",
+    mbid: releaseMbid,
+  });
+  const track = media.upsertLibraryTrack({
+    identityKey: "track:release-only",
+    title: "Release song",
+    artistName: artist.name,
+  });
+  media.linkLibraryAlbumTrack({ albumId: album.id, trackId: track.id, trackNumber: 1 });
+  const file = await seedFile("release-only/song.flac", 4096);
+  media.upsertLibraryMediaFile({
+    trackId: track.id,
+    albumId: album.id,
+    source: "aurral",
+    path: file.filePath,
+    format: "flac",
+  });
+  const { resolveShareManifest } = await import("../../backend/services/shareLinks/metadata.ts");
+  const snapshot = resolveShareManifest(
+    { kind: "album", targetRef: String(album.id), albumRef: null },
+    { kind: "album", title: album.title, artistName: artist.name, albumMbid: releaseMbid },
+  );
+  assert.ok(snapshot);
+  assert.equal(snapshot.albumMbid, null);
+  assert.equal(snapshot.tracks[0].albumMbid, null);
+  assert.equal(snapshot.tracks[0].releaseMbid, releaseMbid);
+});
+
+test("shared recordings keep the requested album, metadata and file", async () => {
+  const mbid = "79999999-9999-4999-8999-999999999999";
+  const track = media.upsertLibraryTrack({
+    identityKey: `recording:${mbid}`,
+    mbid,
+    title: "Repeat",
+    artistName: artist.name,
+  });
+  for (const [album, number] of [
+    [firstAlbum.album, 4],
+    [secondAlbum.album, 7],
+  ] as const) {
+    media.linkLibraryAlbumTrack({ albumId: album.id, trackId: track.id, trackNumber: number });
+    const file = await seedFile(`${album.title}/repeat.flac`, 4096);
+    media.upsertLibraryMediaFile({
+      trackId: track.id,
+      albumId: album.id,
+      source: "aurral",
+      path: file.filePath,
+      format: "flac",
+    });
+  }
+  const { flowPlaylistConfig } =
+    await import("../../backend/services/playlists/flowPlaylistConfig.ts");
+  const { resolveShareManifest } = await import("../../backend/services/shareLinks/metadata.ts");
+  const playlist = flowPlaylistConfig.createStaticPlaylist({
+    name: "Album context",
+    ownerUserId: owner.id,
+    tracks: [
+      {
+        trackName: "Repeat",
+        artistName: artist.name,
+        trackMbid: mbid,
+        albumMbid: SECOND_ALBUM_MBID,
+        albumName: secondAlbum.album.title,
+        trackNumber: 9,
+      },
+    ],
+  });
+  const snapshot = resolveShareManifest(
+    { kind: "playlist", targetRef: playlist.id, albumRef: null },
+    { kind: "playlist", title: playlist.name },
+  );
+  assert.ok(snapshot);
+  assert.equal(snapshot.tracks[0].albumTitle, secondAlbum.album.title);
+  assert.equal(snapshot.tracks[0].trackNumber, 9);
+  assert.equal(snapshot.tracks[0].path, `tracks/${secondAlbum.album.id}/${track.id}`);
+  const artistShare = resolveShareManifest(
+    { kind: "artist", targetRef: String(artist.id), albumRef: null },
+    { kind: "artist", title: artist.name, artistName: artist.name },
+  );
+  assert.ok(artistShare);
+  assert.deepEqual(
+    artistShare.tracks
+      .filter((entry) => entry.trackMbid === mbid)
+      .map((entry) => [entry.albumTitle, entry.trackNumber, entry.path]),
+    [
+      [firstAlbum.album.title, 4, `tracks/${firstAlbum.album.id}/${track.id}`],
+      [secondAlbum.album.title, 7, `tracks/${secondAlbum.album.id}/${track.id}`],
+    ],
+  );
+  for (const trackMbid of [null, mbid]) {
+    const created = await callApi("POST", "", {
+      body: {
+        kind: "track",
+        title: "Repeat",
+        artistName: artist.name,
+        trackMbid,
+        albumTitle: secondAlbum.album.title,
+        manifest: {
+          kind: "track",
+          title: "Repeat",
+          artistName: artist.name,
+          tracks: [
+            { title: "Repeat", artistName: artist.name, albumTitle: secondAlbum.album.title },
+          ],
+        },
+        shareFiles: true,
+        expiresIn: "7d",
+      },
+    });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    const row = db
+      .prepare<[number], { manifest: string }>("SELECT manifest FROM share_links WHERE id = ?")
+      .get(created.body.link.id);
+    assert.ok(row);
+    assert.equal(
+      JSON.parse(row.manifest).tracks[0].path,
+      `tracks/${secondAlbum.album.id}/${track.id}`,
+    );
+  }
+});
+
+test("local access without an account creates short metadata links without granting file access", async () => {
+  const localUser = { ...owner, id: 0 };
+  const created = await callApi("POST", "/plain", {
+    user: localUser,
+    body: {
+      manifest: {
+        kind: "track",
+        title: "Opening Song",
+        artistName: artist.name,
+        tracks: [
+          {
+            title: "Opening Song",
+            artistName: artist.name,
+            path: "tracks/1/1",
+            format: "flac",
+            size: 100,
+          },
+        ],
+      },
+      shareFiles: true,
+      allowDownload: true,
+    },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.match(created.body.link.url, /\/s\/s[A-Za-z0-9_-]{15}$/);
+  assert.equal(created.body.link.shareFiles, false);
+  assert.equal((await callApi("GET", "", { user: localUser })).status, 403);
+  const published = lookupRequests[0].body;
+  assert.ok(published && "manifest" in published && "shareFiles" in published);
+  const { parseShareManifest } = await import("../../lib/shareManifest.ts");
+  const snapshot = parseShareManifest(published.manifest);
+  assert.ok(snapshot);
+  assert.equal(snapshot.tracks[0].path, null);
+  assert.equal(snapshot.tracks[0].size, null);
+  assert.equal(published.shareFiles, false);
+  assert.equal(
+    (
+      await callApi("POST", "/plain", {
+        user: localUser,
+        body: { manifest: { kind: "playlist", title: "Private playlist" } },
+      })
+    ).status,
+    400,
+  );
+  assert.deepEqual(await launches(), []);
+});
+
+test("playlist shares keep missing entries and never expose tracks added after creation", async () => {
+  const { flowPlaylistConfig } =
+    await import("../../backend/services/playlists/flowPlaylistConfig.ts");
+  const playlistOwner = userOps.createUser("playlist-owner", "hash", "user", { accessFlow: true });
+  assert.ok(playlistOwner);
+  const playlist = flowPlaylistConfig.createStaticPlaylist({
+    name: "Shared playlist",
+    ownerUserId: playlistOwner.id,
+    tracks: [
+      { trackName: "Opening Song", artistName: artist.name, albumName: firstAlbum.album.title },
+      { trackName: "Not downloaded", artistName: artist.name },
+    ],
+  });
+  const denied = await callApi("GET", `/availability?kind=playlist&playlistId=${playlist.id}`, {
+    user: stranger,
+  });
+  assert.equal(denied.status, 404);
+  const availability = await callApi(
+    "GET",
+    `/availability?kind=playlist&playlistId=${playlist.id}`,
+    { user: playlistOwner },
+  );
+  assert.equal(availability.status, 200, JSON.stringify(availability.body));
+  assert.equal(availability.body.trackCount, 1);
+  assert.equal(availability.body.totalTracks, 2);
+  const created = await callApi("POST", "", {
+    user: playlistOwner,
+    body: {
+      kind: "playlist",
+      playlistId: playlist.id,
+      manifest: { kind: "playlist", title: playlist.name },
+      shareFiles: true,
+      allowDownload: true,
+      expiresIn: "7d",
+    },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const row = db
+    .prepare<[number], { manifest: string }>("SELECT manifest FROM share_links WHERE id = ?")
+    .get(created.body.link.id);
+  assert.ok(row);
+  const { parseShareManifest } = await import("../../lib/shareManifest.ts");
+  const snapshot = parseShareManifest(JSON.parse(row.manifest));
+  assert.ok(snapshot);
+  assert.deepEqual(
+    snapshot.tracks.map((track) => track.title),
+    ["Opening Song", "Not downloaded"],
+  );
+  assert.equal(snapshot.tracks[1].path, null);
+  assert.ok(!row.manifest.includes(paths.baseDir));
+  flowPlaylistConfig.updateStaticPlaylist(playlist.id, {
+    tracks: [
+      ...playlist.tracks,
+      { trackName: "Later Song", artistName: artist.name, albumName: secondAlbum.album.title },
+    ],
+  });
+  const base = await shareUrl(created.body.link);
+  const publicFiles = await (await fetch(base)).json();
+  assert.deepEqual(
+    publicFiles.tracks.map((track: { title: string }) => track.title),
+    ["Opening Song"],
+  );
+  assert.equal(
+    (
+      await fetch(
+        `${base}/tracks/${secondAlbum.album.id}/${secondAlbum.tracks[0].trackId}/download`,
+      )
+    ).status,
+    404,
+  );
+  db.prepare("UPDATE share_links SET expires_at = ? WHERE id = ?").run(
+    Date.now() - 1,
+    created.body.link.id,
+  );
+  await listener.syncShareListener();
+  assert.ok(
+    (await callApi("GET", "", { user: playlistOwner })).body.links.some(
+      (link: { id: number }) => link.id === created.body.link.id,
+    ),
+  );
 });
