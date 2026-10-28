@@ -1,8 +1,8 @@
 import * as client from "openid-client";
 import type { IDToken, UserInfoResponse } from "openid-client";
-import type { Request, Response } from "express";
 import { createSession } from "../config/session-helpers.ts";
 import { toResolvedUser } from "../middleware/auth.ts";
+import type { ExchangeRequest } from "./oidcAuth.ts";
 import { dbOps, userOps, userIdentityOps } from "../db/helpers/index.ts";
 
 const REAL_GOOGLE_ISSUER = "https://accounts.google.com";
@@ -71,8 +71,8 @@ function prunePendingExchanges(now = Date.now()) {
   }
 }
 
-function getTransactionCookie(req: Request) {
-  const cookies = String(req.headers?.cookie || "").split(";");
+function getTransactionCookie(cookieHeader: string | undefined) {
+  const cookies = String(cookieHeader || "").split(";");
   for (const cookie of cookies) {
     const [name, ...parts] = cookie.trim().split("=");
     if (name !== TRANSACTION_COOKIE) continue;
@@ -85,8 +85,7 @@ function getTransactionCookie(req: Request) {
   return "";
 }
 
-function setTransactionCookie(req: Request, res: Response, value: string, maxAge?: number) {
-  const secure = req.secure || req.protocol === "https";
+function transactionCookie(value: string, secure: boolean, maxAge?: number) {
   const attributes = [
     `${TRANSACTION_COOKIE}=${encodeURIComponent(value)}`,
     "Path=/",
@@ -95,7 +94,7 @@ function setTransactionCookie(req: Request, res: Response, value: string, maxAge
   ];
   if (secure) attributes.push("Secure");
   if (maxAge != null) attributes.push(`Max-Age=${maxAge}`);
-  res.setHeader("Set-Cookie", attributes.join("; "));
+  return attributes.join("; ");
 }
 
 async function getDiscoveryConfig(config: { clientId: string; clientSecret: string }) {
@@ -115,29 +114,19 @@ async function getDiscoveryConfig(config: { clientId: string; clientSecret: stri
   return discoveryConfig;
 }
 
-function buildCallbackUrl(req: Request, redirectUri: string) {
+function buildCallbackUrl(query: Record<string, string>, redirectUri: string) {
   const url = new URL(redirectUri);
-  for (const [key, value] of Object.entries(req.query || {})) {
-    if (value == null) continue;
-    if (Array.isArray(value)) {
-      if (value[0] != null) url.searchParams.set(key, String(value[0]));
-      continue;
-    }
-    url.searchParams.set(key, String(value));
-  }
+  for (const [key, value] of Object.entries(query)) url.searchParams.set(key, value);
   return url;
 }
 
-export async function startGoogleAuth(
-  req: Request,
-  res: Response,
-  mode: { mode: "login" | "link"; linkUserId?: number | null; returnUrl?: boolean },
-) {
+export async function startGoogleAuth(mode: {
+  mode: "login" | "link";
+  linkUserId?: number | null;
+  secure?: boolean;
+}) {
   const config = getGoogleConfig();
-  if (!config) {
-    res.status(404).json({ error: "Google login is not enabled" });
-    return;
-  }
+  if (!config) return null;
 
   const oidc = await getDiscoveryConfig(config);
   const codeVerifier = client.randomPKCECodeVerifier();
@@ -166,22 +155,20 @@ export async function startGoogleAuth(
   };
 
   const redirectTo = client.buildAuthorizationUrl(oidc, parameters);
-  setTransactionCookie(req, res, transactionId);
-  if (mode.returnUrl) {
-    res.json({ authUrl: redirectTo.href });
-    return;
-  }
-  res.redirect(302, redirectTo.href);
+  return { authUrl: redirectTo.href, cookie: transactionCookie(transactionId, !!mode.secure) };
 }
 
-export async function handleGoogleCallback(req: Request) {
+export async function handleGoogleCallback(
+  query: Record<string, string>,
+  cookie: string | undefined,
+) {
   const config = getGoogleConfig();
   if (!config) {
     throw Object.assign(new Error("Google login is not enabled"), { status: 404 });
   }
 
-  const state = String(req.query?.state || "");
-  const transactionId = getTransactionCookie(req);
+  const state = query.state || "";
+  const transactionId = getTransactionCookie(cookie);
   prunePendingLogins();
   const pending = pendingLogins.get(state);
   pendingLogins.delete(state);
@@ -192,7 +179,7 @@ export async function handleGoogleCallback(req: Request) {
   const oidc = await getDiscoveryConfig(config);
   const tokens = await client.authorizationCodeGrant(
     oidc,
-    buildCallbackUrl(req, config.redirectUri),
+    buildCallbackUrl(query, config.redirectUri),
     {
       pkceCodeVerifier: pending.codeVerifier,
       expectedState: state,
@@ -270,8 +257,8 @@ export async function handleGoogleCallback(req: Request) {
   return { code, ...result };
 }
 
-export function exchangeGoogleCallback(code: string | null | undefined, req: Request) {
-  const transactionId = getTransactionCookie(req);
+export function exchangeGoogleCallback(code: string | null | undefined, request: ExchangeRequest) {
+  const transactionId = getTransactionCookie(request.cookie);
   const exchangeCode = String(code || "");
   prunePendingExchanges();
   const pending = pendingExchanges.get(exchangeCode);
@@ -283,11 +270,7 @@ export function exchangeGoogleCallback(code: string | null | undefined, req: Req
   if (pending.result.linked) {
     return { linked: true, user: pending.result.user };
   }
-  const session = createSession(
-    pending.result.user!.id,
-    req.ip || null,
-    req.headers["user-agent"] || null,
-  );
+  const session = createSession(pending.result.user!.id, request.ip, request.userAgent);
   return {
     linked: false,
     token: session.token,
@@ -296,6 +279,4 @@ export function exchangeGoogleCallback(code: string | null | undefined, req: Req
   };
 }
 
-export function clearGoogleTransactionCookie(req: Request, res: Response) {
-  setTransactionCookie(req, res, "", 0);
-}
+export const clearedGoogleTransactionCookie = (secure: boolean) => transactionCookie("", secure, 0);

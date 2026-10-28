@@ -5,7 +5,8 @@ import { useDocumentTitle } from "../hooks/useDocumentTitle";
 import { getAppBasePath } from "../utils/basePath.ts";
 import { clearAuthStorage, setStoredAuth } from "../utils/api/core.ts";
 import { getApiErrorBody, getApiErrorText } from "./onboardingUtils";
-import { startPlexLoginPin, completePlexLogin } from "../utils/api/endpoints/auth.ts";
+import { parseResponse } from "hono/client";
+import { authClient } from "../utils/api/clients/auth.ts";
 import { DotLoader } from "../components/DotLoader";
 import { rememberShareImport } from "../utils/shareLink.ts";
 
@@ -74,7 +75,7 @@ const Login = () => {
     try {
       let pin;
       try {
-        pin = await startPlexLoginPin();
+        pin = await parseResponse(authClient.plex.login.pin.$post({ json: {} }));
       } catch (err) {
         if (popup && !popup.closed) popup.close();
         setError(
@@ -90,8 +91,8 @@ const Login = () => {
       while (Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 2000));
         try {
-          const res = await completePlexLogin();
-          if (res.pending) continue;
+          const res = await parseResponse(authClient.plex.login.complete.$post());
+          if ("pending" in res) continue;
           result = res;
           break;
         } catch (err) {

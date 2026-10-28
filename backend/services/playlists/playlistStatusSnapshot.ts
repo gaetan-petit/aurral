@@ -275,16 +275,14 @@ export function getPlaylistStatusSnapshot({ user = null }: { user?: RequestUser 
   });
   const ownerMap = buildOwnerMap(flows, staticPlaylists);
   const artworkRevisions = getPlaylistArtworkRevisions();
-  const artworkRevision = (id: string) =>
-    artworkRevisions.has(id) ? { artworkRevision: artworkRevisions.get(id) } : {};
   const flowsWithOwners = flows.map((flow) => ({
     ...flow,
-    ...artworkRevision(flow.id),
+    artworkRevision: artworkRevisions.get(flow.id),
     ownerUsername: ownerMap.get(Number(flow?.ownerUserId)) || null,
   }));
   const staticPlaylistsWithOwners = staticPlaylists.map((playlist) => ({
     ...playlist,
-    ...artworkRevision(playlist.id),
+    artworkRevision: artworkRevisions.get(playlist.id),
     ownerUsername: ownerMap.get(Number(playlist?.ownerUserId)) || null,
   }));
   const stats = aggregateStats(scopedStats, flowIds);

@@ -19,13 +19,8 @@ import { useAuth } from "../../contexts/AuthContext";
 import { useToast } from "../../contexts/ToastContext";
 import { useDocumentTitle } from "../../hooks/useDocumentTitle";
 import { useLibraryDestination } from "../../hooks/useLibraryDestination";
-import {
-  convertFlowToStaticPlaylist,
-  deleteFlow,
-  getFlowLidarrImportListUrl,
-  startFlow,
-  updateFlow,
-} from "../../utils/api/endpoints/playlists.ts";
+import { parseResponse, type InferRequestType } from "hono/client";
+import { flowsClient } from "../../utils/api/clients/flows.ts";
 import { getApiErrorMessage } from "../onboardingUtils.tsx";
 import { ConfirmModal } from "../../components/ConfirmModal.tsx";
 import { PlaylistArtworkThumb } from "./components/PlaylistArtworkThumb.tsx";
@@ -169,10 +164,22 @@ function FlowDetail({ flow }: { flow: Flow }) {
     describeFlowSchedule(flow, countdownNow),
   ];
 
+  const updateFlow = (
+    json: InferRequestType<(typeof flowsClient.flows)[":flowId"]["$put"]>["json"],
+  ) =>
+    parseResponse(
+      flowsClient.flows[":flowId"].$put({ param: { flowId: encodeURIComponent(flow.id) }, json }),
+    );
+
   const handleRunNow = async () => {
     setRunning(true);
     try {
-      const response = await startFlow(flow.id, flow.size);
+      const response = await parseResponse(
+        flowsClient.start[":flowId"].$post({
+          param: { flowId: encodeURIComponent(flow.id) },
+          json: { limit: flow.size },
+        }),
+      );
       const queued = Number(response?.tracksQueued || 0);
       showSuccess(queued > 0 ? `${flow.name} queued ${queued} tracks` : `${flow.name} run started`);
       await fetchStatus();
@@ -191,7 +198,7 @@ function FlowDetail({ flow }: { flow: Flow }) {
       const payload = isReleaseRadarFlow(flow)
         ? buildReleaseRadarFlowFromForm(flow, draft)
         : buildFlowFromForm(draft);
-      const response = await updateFlow(flow.id, payload);
+      const response = await updateFlow(payload);
       setDraft(flowToForm(response?.flow || { ...flow, ...payload }));
       showSuccess("Recipe saved");
       await fetchStatus();
@@ -205,7 +212,7 @@ function FlowDetail({ flow }: { flow: Flow }) {
   };
 
   const handleRename = async (name: string) => {
-    await updateFlow(flow.id, { name });
+    await updateFlow({ name });
     setDraft((current) => ({ ...current, name }));
     await fetchStatus();
   };
@@ -213,7 +220,9 @@ function FlowDetail({ flow }: { flow: Flow }) {
   const handleDelete = async () => {
     setDeleting(true);
     try {
-      const result = await deleteFlow(flow.id);
+      const result = await parseResponse(
+        flowsClient.flows[":flowId"].$delete({ param: { flowId: encodeURIComponent(flow.id) } }),
+      );
       showSuccess(result?.queued ? `Removal of ${flow.name} queued` : `Deleted ${flow.name}`);
       await fetchStatus();
       navigate("/flows", { replace: true });
@@ -229,9 +238,12 @@ function FlowDetail({ flow }: { flow: Flow }) {
       const reservedNames = new Set(
         staticPlaylists.map((playlist) => normalizeNameKey(playlist?.name)).filter(Boolean),
       );
-      const response = await convertFlowToStaticPlaylist(flow.id, {
-        name: reserveUniqueName(reservedNames, `${flow.name} Static`),
-      });
+      const response = await parseResponse(
+        flowsClient.flows[":flowId"]["static-playlist"].$post({
+          param: { flowId: encodeURIComponent(flow.id) },
+          json: { name: reserveUniqueName(reservedNames, `${flow.name} Static`) },
+        }),
+      );
       showSuccess(`Saved ${flow.name} as ${response?.playlist?.name || "a playlist"}`);
       await fetchStatus();
     } catch (err) {
@@ -241,7 +253,11 @@ function FlowDetail({ flow }: { flow: Flow }) {
 
   const handleCopyLidarrUrl = async () => {
     try {
-      const response = await getFlowLidarrImportListUrl(flow.id);
+      const response = await parseResponse(
+        flowsClient.flows[":flowId"]["lidarr-import-list"].$get({
+          param: { flowId: encodeURIComponent(flow.id) },
+        }),
+      );
       const token = String(response?.token || "").trim();
       if (!token) throw new Error("Feed URL unavailable");
       const url = new URL(
@@ -261,7 +277,7 @@ function FlowDetail({ flow }: { flow: Flow }) {
     successMessage: string,
   ) => {
     try {
-      await updateFlow(flow.id, changes);
+      await updateFlow(changes);
       setDraft((current) => ({ ...current, ...changes }));
       showSuccess(successMessage);
       await fetchStatus();

@@ -6,17 +6,12 @@ import { DotLoader } from "../../components/DotLoader";
 import TooltipButton from "../../components/TooltipButton";
 import { Check, Shuffle, Trash2, Upload } from "../../components/icons";
 import { useToast } from "../../contexts/ToastContext";
+import { parseResponse } from "hono/client";
 import {
-  deletePlaylistArtwork,
-  generatePlaylistArtwork,
-  getPlaylistArtworkPick,
-  getPlaylistArtworkPreviewUrl,
-  restorePlaylistArtwork,
-  shufflePlaylistArtwork,
-  uploadPlaylistArtwork,
-  type PlaylistArtworkStyle,
+  playlistArtworkClient,
   type PlaylistCoverPick,
-} from "../../utils/api/endpoints/playlists.ts";
+} from "../../utils/api/clients/playlistArtwork.ts";
+import { getPlaylistArtworkPreviewUrl } from "../../utils/api/playlistUrls.ts";
 import { asApiError } from "../../utils/api/core.ts";
 import { getApiErrorText } from "../onboardingUtils.tsx";
 
@@ -35,16 +30,30 @@ type PlaylistEditModalProps = {
 
 const PREVIEW_DELAY_MS = 300;
 
+const artwork = playlistArtworkClient.artwork[":playlistId"];
+const artworkParam = (playlistId: string) => ({ playlistId: encodeURIComponent(playlistId) });
+
 const commitCover = (playlistId: string, cover: CoverDraft) => {
+  const param = artworkParam(playlistId);
   switch (cover.kind) {
     case "generated":
-      return generatePlaylistArtwork(playlistId, cover.pick.style, cover.pick);
+      return parseResponse(
+        artwork.generate.$post({ param, json: { style: cover.pick.style, pick: cover.pick } }),
+      );
     case "upload":
-      return uploadPlaylistArtwork(playlistId, cover.file);
+      return parseResponse(
+        artwork.$put(
+          { param },
+          {
+            headers: { "Content-Type": cover.file.type || "application/octet-stream" },
+            init: { body: cover.file },
+          },
+        ),
+      );
     case "original":
-      return restorePlaylistArtwork(playlistId);
+      return parseResponse(artwork.restore.$post({ param }));
     case "removed":
-      return deletePlaylistArtwork(playlistId);
+      return parseResponse(artwork.$delete({ param }));
   }
 };
 
@@ -63,7 +72,10 @@ export function PlaylistEditModal({ entry, title, onClose, onRename }: PlaylistE
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const { data: savedPick = null } = useQuery({
     queryKey: ["playlists", "artwork-pick", entry.id],
-    queryFn: () => getPlaylistArtworkPick(entry.id).then((response) => response.pick),
+    queryFn: () =>
+      parseResponse(artwork.pick.$get({ param: artworkParam(entry.id) })).then(
+        (response) => response.pick,
+      ),
     staleTime: 0,
   });
 
@@ -91,11 +103,16 @@ export function PlaylistEditModal({ entry, title, onClose, onRename }: PlaylistE
   const visibleSrc = src && src !== failedSrc ? src : null;
   const disabled = busy !== null;
 
-  const shuffle = async (style: PlaylistArtworkStyle) => {
+  const shuffle = async (style: PlaylistCoverPick["style"]) => {
     setBusy("shuffle");
     setError("");
     try {
-      const { pick } = await shufflePlaylistArtwork(entry.id, { style, previous: generated });
+      const { pick } = await parseResponse(
+        artwork.shuffle.$post({
+          param: artworkParam(entry.id),
+          json: { style, previous: generated },
+        }),
+      );
       if (!pick) return;
       setDraft({ kind: "generated", pick });
       if (style === "artist" && !pick.artistKey)
@@ -139,7 +156,8 @@ export function PlaylistEditModal({ entry, title, onClose, onRename }: PlaylistE
       if (cover) {
         const result = await commitCover(entry.id, cover);
         bumpArtwork(entry.id);
-        if (result.fallback) showInfo("No artist photo available. Created a simple cover.");
+        if ("fallback" in result && result.fallback)
+          showInfo("No artist photo available. Created a simple cover.");
       }
       showSuccess("Changes saved");
       onClose();

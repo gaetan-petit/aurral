@@ -1,3 +1,5 @@
+import type { HttpBindings } from "@hono/node-server";
+
 export interface RequestUser {
   id: number;
   username: string;
@@ -8,10 +10,12 @@ export interface RequestUser {
   roleSource?: string;
 }
 
-declare global {
-  namespace Express {
-    interface Request {
-      user?: RequestUser;
-    }
-  }
-}
+export type AppEnv = {
+  Bindings: HttpBindings;
+  Variables: {
+    user?: RequestUser;
+    clientIp: string;
+    clientIps: string[];
+    protocol: string;
+  };
+};

@@ -1,11 +1,8 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useSearchParams } from "react-router";
-import {
-  importShareLink,
-  openShareLink,
-  previewShareImport,
-} from "../utils/api/endpoints/shareLinks.ts";
+import { parseResponse } from "hono/client";
+import { shareLinksClient } from "../utils/api/clients/shareLinks.ts";
 import { useDocumentTitle } from "../hooks/useDocumentTitle.ts";
 import { getApiErrorMessage } from "./onboardingUtils.tsx";
 import { DotLoader } from "../components/DotLoader.tsx";
@@ -22,7 +19,7 @@ export default function ShareImportPage() {
   const queryClient = useQueryClient();
   const destination = useQuery({
     queryKey: ["share-open", sharedUrl],
-    queryFn: () => openShareLink(sharedUrl),
+    queryFn: () => parseResponse(shareLinksClient.open.$post({ json: { url: sharedUrl } })),
     enabled: opening && Boolean(sharedUrl),
     retry: false,
   });
@@ -31,7 +28,8 @@ export default function ShareImportPage() {
   }, [opening, destination.data, navigate]);
   const preview = useQuery({
     queryKey: ["share-import", sharedUrl],
-    queryFn: () => previewShareImport(sharedUrl),
+    queryFn: () =>
+      parseResponse(shareLinksClient.import.preview.$post({ json: { url: sharedUrl } })),
     enabled: Boolean(sharedUrl) && !opening,
     retry: false,
     staleTime: 0,
@@ -47,10 +45,14 @@ export default function ShareImportPage() {
   const includeFiles = params.get("action") === "files" && preview.data?.canDownload === true;
   const submit = useMutation({
     mutationFn: () =>
-      importShareLink({
-        url: sharedUrl,
-        includeFiles: includeFiles && preview.data?.canDownload === true,
-      }),
+      parseResponse(
+        shareLinksClient.import.$post({
+          json: {
+            url: sharedUrl,
+            includeFiles: includeFiles && preview.data?.canDownload === true,
+          },
+        }),
+      ),
     onSuccess: () =>
       Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.libraryPrefix }),

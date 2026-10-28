@@ -4,16 +4,9 @@ import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tan
 import { useAuth } from "../contexts/AuthContext";
 import { useToast } from "../contexts/ToastContext";
 import { queryKeys } from "../queryClient";
-import {
-  createPlainShareLink,
-  createShareLink,
-  getShareAvailability,
-} from "../utils/api/endpoints/shareLinks";
+import { parseResponse, type InferResponseType } from "hono/client";
+import { shareLinksClient } from "../utils/api/clients/shareLinks.ts";
 import { getApiErrorText } from "../pages/onboardingUtils";
-import type {
-  ShareAvailabilityResponse,
-  ShareLinkResponse,
-} from "../../../backend/routes/shareLinks.ts";
 import { shareLink, type ShareItem, type ShareKind } from "../utils/shareLink";
 import { formatDateTime } from "../utils/dateTime.ts";
 import { DotLoader } from "./DotLoader";
@@ -31,6 +24,11 @@ const EXPIRY_OPTIONS = [
 const KIND_LABELS = { artist: "artist", album: "album", track: "track", playlist: "playlist" };
 
 type ShareRequest = { item: ShareItem; label?: string };
+type ShareAvailability = InferResponseType<typeof shareLinksClient.availability.$get, 200>;
+type CreatedShareLink = Pick<
+  InferResponseType<typeof shareLinksClient.$post, 201>["link"],
+  "url" | "shareFiles" | "expiresAt"
+>;
 
 const errorMessage = (error: unknown, fallback: string) =>
   getApiErrorText(error, "message") || getApiErrorText(error, "error") || fallback;
@@ -64,7 +62,7 @@ function ListenHint({
   onRetry,
 }: {
   kind: ShareKind;
-  availability: UseQueryResult<ShareAvailabilityResponse>;
+  availability: UseQueryResult<ShareAvailability>;
   onRetry: () => void;
 }) {
   if (availability.isPending) {
@@ -103,7 +101,7 @@ function ListenHint({
 
 function describeCreated(
   kind: ShareKind,
-  { shareFiles, expiresAt }: Pick<ShareLinkResponse, "shareFiles" | "expiresAt">,
+  { shareFiles, expiresAt }: Pick<CreatedShareLink, "shareFiles" | "expiresAt">,
 ) {
   const files = shareFiles
     ? expiresAt
@@ -137,10 +135,7 @@ export function ShareModal({
   const [listen, setListen] = useState(false);
   const [allowDownload, setAllowDownload] = useState(false);
   const [expiresIn, setExpiresIn] = useState("7d");
-  const [created, setCreated] = useState<Pick<
-    ShareLinkResponse,
-    "url" | "shareFiles" | "expiresAt"
-  > | null>(null);
+  const [created, setCreated] = useState<CreatedShareLink | null>(null);
   const ids = { listen: useId(), download: useId(), expires: useId() };
   const refs = libraryRefs(item);
   const manifest = item
@@ -158,7 +153,8 @@ export function ShareModal({
 
   const availability = useQuery({
     queryKey: ["share-links", "availability", refs],
-    queryFn: ({ signal }) => getShareAvailability(refs, { signal }),
+    queryFn: ({ signal }) =>
+      parseResponse(shareLinksClient.availability.$get({ query: refs }, { init: { signal } })),
     enabled: open && hasAccount,
     staleTime: 0,
   });
@@ -169,14 +165,18 @@ export function ShareModal({
 
   const create = useMutation({
     mutationFn: async () => {
-      if (!hasAccount) return createPlainShareLink(manifest);
-      return createShareLink({
-        ...refs,
-        manifest,
-        shareFiles: listen && canListen,
-        allowDownload: listen && canListen && allowDownload,
-        expiresIn,
-      });
+      if (!hasAccount) return parseResponse(shareLinksClient.plain.$post({ json: { manifest } }));
+      return parseResponse(
+        shareLinksClient.$post({
+          json: {
+            ...refs,
+            manifest,
+            shareFiles: listen && canListen,
+            allowDownload: listen && canListen && allowDownload,
+            expiresIn,
+          },
+        }),
+      );
     },
     onSuccess: (data) => {
       setCreated(data.link);

@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { playlistStatusQueryOptions } from "../queryOptions.ts";
-import { getPlaylistArtworkUrl } from "../utils/api/endpoints/playlists.ts";
+import { getPlaylistArtworkUrl } from "../utils/api/playlistUrls.ts";
 import { queryClient, queryKeys } from "../queryClient.ts";
 
 export function usePlaylistArtwork() {

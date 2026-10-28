@@ -55,7 +55,7 @@ export interface StoredFlow {
 
 export type CreateFlowInput = StoredFlow & { name: string };
 
-export interface FlowUpdates {
+interface FlowUpdates {
   name?: string;
   size?: unknown;
   mix?: unknown;
@@ -116,7 +116,7 @@ export interface PlaylistTrackInput {
   membershipId?: unknown;
 }
 
-export type PlaylistJob = PlaylistTrackInput & { id: string; createdAt?: unknown };
+type PlaylistJob = PlaylistTrackInput & { id: string; createdAt?: unknown };
 
 export interface StoredStaticPlaylist {
   id?: string;

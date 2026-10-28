@@ -12,8 +12,9 @@ import {
   requestAlbumFromSearch,
   settleLibraryOwnerConflict,
 } from "../utils/api/endpoints/library.ts";
-import { addStaticPlaylistTracks, createStaticPlaylist } from "../utils/api/endpoints/playlists.ts";
-import { getTagSuggestions } from "../utils/api/endpoints/discovery.ts";
+import { parseResponse } from "hono/client";
+import { staticPlaylistsClient } from "../utils/api/clients/staticPlaylists.ts";
+import { discoveryClient } from "../utils/api/clients/discovery.ts";
 import { searchLibrary, searchUnified } from "../utils/api/endpoints/search.ts";
 import {
   buildUnifiedSuggestionSections,
@@ -234,7 +235,11 @@ function GlobalSearch({ settingsMode = false }) {
       scheduleSuggest(async (isCurrent) => {
         setLoadingSuggestions(true);
         try {
-          const data = await getTagSuggestions(tagPart, TAG_SUGGESTIONS_LIMIT);
+          const data = await parseResponse(
+            discoveryClient.tags.$get({
+              query: { q: tagPart.trim() || undefined, limit: String(TAG_SUGGESTIONS_LIMIT) },
+            }),
+          );
           if (!isCurrent()) return;
           const raw = data.tags || [];
           const seen = new Set();
@@ -496,18 +501,27 @@ function GlobalSearch({ settingsMode = false }) {
       try {
         if (target?.mode === "new") {
           const name = String(target?.name || "").trim() || "Playlist";
-          await createStaticPlaylist({
-            name,
-            tracks: [payload],
-          });
+          await parseResponse(
+            staticPlaylistsClient["shared-playlists"].$post({
+              json: {
+                name,
+                tracks: [payload],
+              },
+            }),
+          );
           showSuccess(`Track saved to ${name}`);
         } else {
           const targetPlaylist = staticPlaylists.find(
             (playlist) => playlist.id === target?.playlistId,
           );
-          await addStaticPlaylistTracks(target.playlistId, {
-            tracks: [payload],
-          });
+          await parseResponse(
+            staticPlaylistsClient["shared-playlists"][":playlistId"].tracks.$post({
+              param: { playlistId: encodeURIComponent(target.playlistId) },
+              json: {
+                tracks: [payload],
+              },
+            }),
+          );
           showSuccess(`Track added to ${targetPlaylist?.name || "playlist"}`);
         }
 

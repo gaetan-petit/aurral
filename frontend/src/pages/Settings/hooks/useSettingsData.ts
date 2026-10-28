@@ -1,24 +1,15 @@
 import { useState, useEffect, useRef, useCallback, type FormEvent } from "react";
 import { useMutation, useQueries, useQuery } from "@tanstack/react-query";
-import api from "../../../utils/api/core.ts";
 import type { useToast } from "../../../contexts/ToastContext";
 import type { useSettingsTabs } from "./useSettingsTabs";
-import { checkHealth, fetchHealth } from "../../../utils/api/endpoints/auth.ts";
-import {
-  fetchAppSettings,
-  fetchPlaybackSettings,
-  fetchDownloadClientSettings,
-  updateAppSettings,
-  getLidarrRootFolders,
-  getLidarrProfiles,
-  getLidarrMetadataProfiles,
-  getLidarrTags,
-  testLidarrConnection,
-  testGotifyConnection,
-  applyLidarrCommunityGuide,
-} from "../../../utils/api/endpoints/settings.ts";
+import { fetchHealth, refetchHealth } from "../../../utils/appHealth.ts";
+import { parseResponse } from "hono/client";
+import { lidarrCredentialParams } from "../../../utils/api/core.ts";
+import { settingsClient } from "../../../utils/api/clients/settings.ts";
+import { playbackSettingsClient } from "../../../utils/api/clients/playbackSettings.ts";
+import { downloadClientSettingsClient } from "../../../utils/api/clients/downloadClientSettings.ts";
 import { refetchDiscoveryStatus } from "../../../hooks/useDiscoveryStatus";
-import { refreshDiscovery } from "../../../utils/api/endpoints/discovery.ts";
+import { discoveryClient } from "../../../utils/api/clients/discovery.ts";
 import { DISCOVERY_MANUAL_REFRESH_KEY } from "../../../utils/discoverRecentNavigation.ts";
 import { allReleaseTypes } from "../constants";
 import {
@@ -239,35 +230,41 @@ const getLidarrResourceConfig = (settings: SettingsState) => {
 const buildLidarrQueries = (
   { url, apiKey, credentialsRevision }: LidarrResourceConfig,
   enabled?: boolean,
-) =>
-  [
+) => {
+  const query = lidarrCredentialParams(url, apiKey);
+  return [
     {
       queryKey: queryKeys.lidarrRootFolders(url, credentialsRevision),
       queryFn: ({ signal }: { signal: AbortSignal }) =>
-        getLidarrRootFolders(url, apiKey, { signal }),
+        parseResponse(settingsClient.lidarr["root-folders"].$get({ query }, { init: { signal } })),
       enabled: enabled && Boolean(url && apiKey),
       staleTime: 60_000,
     },
     {
       queryKey: queryKeys.lidarrProfiles(url, credentialsRevision),
-      queryFn: ({ signal }: { signal: AbortSignal }) => getLidarrProfiles(url, apiKey, { signal }),
+      queryFn: ({ signal }: { signal: AbortSignal }) =>
+        parseResponse(settingsClient.lidarr.profiles.$get({ query }, { init: { signal } })),
       enabled: enabled && Boolean(url && apiKey),
       staleTime: 60_000,
     },
     {
       queryKey: queryKeys.lidarrMetadataProfiles(url, credentialsRevision),
       queryFn: ({ signal }: { signal: AbortSignal }) =>
-        getLidarrMetadataProfiles(url, apiKey, { signal }),
+        parseResponse(
+          settingsClient.lidarr["metadata-profiles"].$get({ query }, { init: { signal } }),
+        ),
       enabled: enabled && Boolean(url && apiKey),
       staleTime: 60_000,
     },
     {
       queryKey: queryKeys.lidarrTags(url, credentialsRevision),
-      queryFn: ({ signal }: { signal: AbortSignal }) => getLidarrTags(url, apiKey, { signal }),
+      queryFn: ({ signal }: { signal: AbortSignal }) =>
+        parseResponse(settingsClient.lidarr.tags.$get({ query }, { init: { signal } })),
       enabled: enabled && Boolean(url && apiKey),
       staleTime: 60_000,
     },
   ] as const;
+};
 
 export function useSettingsData(
   showSuccess: Toast,
@@ -312,31 +309,35 @@ export function useSettingsData(
 
   const settingsQuery = useQuery({
     queryKey: queryKeys.appSettings,
-    queryFn: ({ signal }) => fetchAppSettings({ signal }),
+    queryFn: ({ signal }) => parseResponse(settingsClient.$get({}, { init: { signal } })),
     enabled: false,
     staleTime: 30_000,
   });
   const playbackQuery = useQuery({
     queryKey: queryKeys.playbackSettings,
-    queryFn: ({ signal }) => fetchPlaybackSettings({ signal }),
+    queryFn: ({ signal }) =>
+      parseResponse(playbackSettingsClient.playback.$get({}, { init: { signal } })),
     enabled: false,
     staleTime: 30_000,
   });
   const downloadClientQuery = useQuery({
     queryKey: queryKeys.downloadClientSettings,
-    queryFn: ({ signal }) => fetchDownloadClientSettings({ signal }),
+    queryFn: ({ signal }) =>
+      parseResponse(
+        downloadClientSettingsClient["download-clients"].$get({}, { init: { signal } }),
+      ),
     enabled: false,
     staleTime: 30_000,
   });
   const healthQuery = useQuery({
     queryKey: queryKeys.appHealth,
-    queryFn: ({ signal }) => fetchHealth({ signal }),
+    queryFn: ({ signal }) => fetchHealth(signal),
     staleTime: 30_000,
   });
   const health = healthQuery.data ?? null;
   const settingsSaveMutation = useMutation({
     mutationKey: SETTINGS_SAVE_KEY,
-    mutationFn: updateAppSettings,
+    mutationFn: (json: SettingsState) => parseResponse(settingsClient.$post({ json })),
     scope: { id: "app-settings" },
     onSuccess: (savedSettings) => {
       queryClient.setQueryData(queryKeys.appSettings, savedSettings);
@@ -382,7 +383,7 @@ export function useSettingsData(
 
   const refreshHealth = useCallback(async () => {
     try {
-      return await checkHealth({ force: true });
+      return await refetchHealth();
     } catch {
       return null;
     }
@@ -575,7 +576,7 @@ export function useSettingsData(
   );
 
   const discoveryRefreshMutation = useMutation({
-    mutationFn: () => refreshDiscovery(),
+    mutationFn: () => parseResponse(discoveryClient.refresh.$post()),
     onSuccess: () => {
       localStorage.setItem(DISCOVERY_MANUAL_REFRESH_KEY, "1");
     },
@@ -594,7 +595,7 @@ export function useSettingsData(
   }, [requestDiscoveryRefresh, requestingDiscoveryRefresh]);
 
   const clearCacheMutation = useMutation({
-    mutationFn: () => api.post("/discover/clear"),
+    mutationFn: () => parseResponse(discoveryClient.clear.$post()),
     onSuccess: async () => {
       showSuccess("Artwork cache cleared.");
       await refreshHealth();
@@ -614,7 +615,7 @@ export function useSettingsData(
   }, [clearCache]);
 
   const communityGuideMutation = useMutation({
-    mutationFn: () => applyLidarrCommunityGuide(),
+    mutationFn: () => parseResponse(settingsClient.lidarr["apply-community-guide"].$post()),
     onError: (err) => {
       const failure = readApiError(err);
       const errorMsg = failure.message || failure.error || failure.text;
@@ -717,7 +718,5 @@ export function useSettingsData(
     showCommunityGuideModal,
     setShowCommunityGuideModal,
     handleApplyCommunityGuide,
-    testLidarrConnection,
-    testGotifyConnection,
   };
 }

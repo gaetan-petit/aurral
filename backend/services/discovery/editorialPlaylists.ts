@@ -118,7 +118,7 @@ export async function getEditorialPlaylist(user: RequestUser, value: string) {
   };
 }
 
-export type EditorialLibraryAddResponse =
+type EditorialLibraryAddResponse =
   | { playlistId: string; name: string; alreadyAdded: true }
   | { playlistId: string; name: string; alreadyAdded: false; tracksQueued: number };
 

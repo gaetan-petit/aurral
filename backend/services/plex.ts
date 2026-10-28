@@ -84,7 +84,7 @@ function toBool(value: unknown) {
   return value === true || value === "1" || value === 1;
 }
 
-export type PlexHomeUser = {
+type PlexHomeUser = {
   id: string | number;
   uuid?: string | null;
   title?: string;

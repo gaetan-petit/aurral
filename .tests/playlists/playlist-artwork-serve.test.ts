@@ -2,12 +2,13 @@ import { test, afterAll, vi } from "vite-plus/test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
-import express from "express";
+import { getRequestListener } from "@hono/node-server";
 
 import {
   applyIsolatedBackendEnv,
   cleanupIsolatedState,
   createIsolatedStateDir,
+  createMockHttpServer,
 } from "../helpers/backendTestHarness.ts";
 
 const isolatedState = await createIsolatedStateDir("playlist-artwork-serve", {
@@ -22,18 +23,14 @@ dbOps.updateSettings({ downloadFolderPath: path.join(isolatedState.dataDir, "dow
 const [
   { flowPlaylistConfig },
   { playlistManager },
-  { registerArtworkServe },
-  { default: playlistsRouter },
-  { authMiddleware },
+  { app },
   { createSession },
   { playlistOperationQueue },
   { processPlaylistOperation },
 ] = await Promise.all([
   import("../../backend/services/playlists/flowPlaylistConfig.ts"),
   import("../../backend/services/playlists/playlistManager.ts"),
-  import("../../backend/routes/playlists/handlers/artworkServe.ts"),
-  import("../../backend/routes/playlists/index.ts"),
-  import("../../backend/middleware/auth.ts"),
+  import("../../backend/app.ts"),
   import("../../backend/config/session-helpers.ts"),
   import("../../backend/services/playlists/playlistOperationQueue.ts"),
   import("../../backend/services/playlists/playlistOperations.ts"),
@@ -58,29 +55,20 @@ test("serves playlist artwork from a hidden data directory", async () => {
   assert.ok(artwork != null);
   assert.ok(artwork.safePath.split(path.sep).some((segment: string) => segment.startsWith(".")));
 
-  const app = express();
-  const router = express.Router();
-  registerArtworkServe(router);
-  app.use("/api/playlists", router);
-  const server = await new Promise<import("node:http").Server>((resolve) => {
-    const listener = app.listen(0, "127.0.0.1", () => resolve(listener));
-  });
+  const server = await createMockHttpServer(getRequestListener(app.fetch));
   try {
-    const response = await fetch(
-      `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}/api/playlists/artwork/${playlist.id}`,
-      {
-        headers: {
-          authorization: `Basic ${Buffer.from("listener:listener-password").toString("base64")}`,
-        },
+    const response = await fetch(`${server.url}/api/playlists/artwork/${playlist.id}`, {
+      headers: {
+        authorization: `Basic ${Buffer.from("listener:listener-password").toString("base64")}`,
       },
-    );
+    });
     assert.equal(response.status, 200);
     assert.deepEqual(
       Buffer.from(await response.arrayBuffer()),
       await fs.readFile(artwork.safePath),
     );
   } finally {
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await server.close();
   }
 });
 
@@ -99,16 +87,9 @@ test("a new flow or static playlist has its cover as soon as it is created, with
     queuedOperations.push(payload);
     return { queued: true, operationId: queuedOperations.length };
   });
-  const app = express();
-  app.use(express.json());
-  app.use(authMiddleware);
-  app.use("/api/playlists", playlistsRouter);
-  const server = await new Promise<import("node:http").Server>((resolve) => {
-    const listener = app.listen(0, "127.0.0.1", () => resolve(listener));
-  });
-  const baseUrl = `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}`;
+  const server = await createMockHttpServer(getRequestListener(app.fetch));
   const request = async (route: string, body?: Record<string, unknown>) => {
-    const response = await fetch(`${baseUrl}/api/playlists${route}`, {
+    const response = await fetch(`${server.url}/api/playlists${route}`, {
       method: body ? "POST" : "GET",
       headers: { authorization, ...(body ? { "content-type": "application/json" } : {}) },
       body: body ? JSON.stringify(body) : undefined,
@@ -152,7 +133,7 @@ test("a new flow or static playlist has its cover as soon as it is created, with
     assert.equal(playlistCover.status, 200);
     assert.equal(playlistCover.type, "image/webp");
   } finally {
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await server.close();
   }
 });
 
@@ -163,18 +144,12 @@ test("cover previews load from an image tag that can only carry the session toke
     name: "Wedding MegaMix",
     ownerUserId: user.id,
   });
-  const app = express();
-  app.use(authMiddleware);
-  app.use("/api/playlists", playlistsRouter);
-  const server = await new Promise<import("node:http").Server>((resolve) => {
-    const listener = app.listen(0, "127.0.0.1", () => resolve(listener));
-  });
-  const baseUrl = `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}`;
+  const server = await createMockHttpServer(getRequestListener(app.fetch));
   const query = new URLSearchParams({ title: playlist.name, style: "simple", template: "a3" });
   const preview = (token?: string) => {
     const params = new URLSearchParams(query);
     if (token) params.set("token", token);
-    return fetch(`${baseUrl}/api/playlists/artwork/${playlist.id}/preview?${params}`);
+    return fetch(`${server.url}/api/playlists/artwork/${playlist.id}/preview?${params}`);
   };
   try {
     assert.equal((await preview()).status, 401);
@@ -182,6 +157,6 @@ test("cover previews load from an image tag that can only carry the session toke
     assert.equal(response.status, 200);
     assert.equal(response.headers.get("content-type"), "image/webp");
   } finally {
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await server.close();
   }
 });

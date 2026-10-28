@@ -1,13 +1,10 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { getRequests, triggerAlbumSearch } from "../utils/api/endpoints/library.ts";
-import {
-  approveBlockedJob,
-  cancelDownloadJob,
-  denyBlockedJob,
-  getStagingStreamUrl,
-  retryDownloadJob,
-} from "../utils/api/endpoints/playlists";
+import { parseResponse } from "hono/client";
+import { requestsClient } from "../utils/api/clients/requests.ts";
+import { playlistJobsClient } from "../utils/api/clients/playlistJobs.ts";
+import { triggerAlbumSearch } from "../utils/api/endpoints/library.ts";
+import { getStagingStreamUrl } from "../utils/api/playlistUrls.ts";
 import { useAudioQueue } from "../contexts/audioQueueContext";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
 import { useAuth } from "../contexts/AuthContext";
@@ -44,6 +41,12 @@ import { AlertCircle, Music } from "../components/icons";
 import { SkeletonActivityList, SkeletonStatus } from "../components/Skeletons";
 import { queryClient, queryKeys } from "../queryClient.ts";
 import type { ActivityRequest } from "./activity/activityListUtils.ts";
+
+const loadRequests = (refresh: boolean, signal: AbortSignal): Promise<ActivityRequest[]> =>
+  parseResponse(
+    requestsClient.$get({ query: { refresh: refresh ? "1" : undefined } }, { init: { signal } }),
+  );
+
 const ACTIVITY_PAGE_SIZE = 25;
 
 const QUEUE_EMPTY_STATE = {
@@ -118,7 +121,7 @@ function ActivityPage() {
   }, [activityWsConnected, refreshFromStatusEvent]);
   const activityQuery = useQuery({
     queryKey: activityQueryKey,
-    queryFn: ({ signal }) => getRequests({ refresh: isListLikeView, signal }),
+    queryFn: ({ signal }) => loadRequests(isListLikeView, signal),
     enabled: !isMissingView,
     staleTime: isListLikeView ? 0 : 30_000,
     refetchInterval: isMissingView
@@ -175,7 +178,7 @@ function ActivityPage() {
       try {
         const result = await queryClient.fetchQuery({
           queryKey: activityQueryKey,
-          queryFn: ({ signal }) => getRequests({ refresh: refresh || isListLikeView, signal }),
+          queryFn: ({ signal }) => loadRequests(refresh || isListLikeView, signal),
           staleTime: refresh ? 0 : isListLikeView ? 0 : 30_000,
         });
         setLocalError(null);
@@ -253,10 +256,20 @@ function ActivityPage() {
     mutationFn: ({ albumId }: { albumId: string }) => triggerAlbumSearch(albumId),
   });
   const approveMutation = useMutation({
-    mutationFn: approveBlockedJob,
+    mutationFn: (jobId: string) =>
+      parseResponse(
+        playlistJobsClient.jobs[":jobId"].approve.$post({
+          param: { jobId: encodeURIComponent(jobId) },
+        }),
+      ),
   });
   const denyMutation = useMutation({
-    mutationFn: denyBlockedJob,
+    mutationFn: (jobId: string) =>
+      parseResponse(
+        playlistJobsClient.jobs[":jobId"].deny.$post({
+          param: { jobId: encodeURIComponent(jobId) },
+        }),
+      ),
   });
 
   const handleReSearchAlbum = async (request: ActivityRequest) => {
@@ -317,8 +330,11 @@ function ActivityPage() {
     if (!jobId || controllingJobs[jobId]) return;
     setControllingJobs((prev) => ({ ...prev, [jobId]: action }));
     try {
+      const param = { jobId: encodeURIComponent(jobId) };
       const result =
-        action === "cancel" ? await cancelDownloadJob(jobId) : await retryDownloadJob(jobId);
+        action === "cancel"
+          ? await parseResponse(playlistJobsClient.jobs[":jobId"].cancel.$post({ param }))
+          : await parseResponse(playlistJobsClient.jobs[":jobId"].retry.$post({ param }));
       const cancelling = action === "cancel" && result?.status === "cancel_requested";
       updateRequests((prev) =>
         prev.map((item) =>

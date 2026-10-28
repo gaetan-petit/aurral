@@ -5,7 +5,7 @@ import { test, beforeEach, afterAll, afterEach, vi } from "vite-plus/test";
 import assert from "node:assert/strict";
 import fs from "fs/promises";
 import path from "path";
-import express from "express";
+import { listen, signedInAs } from "../helpers/honoApp.ts";
 import { NavidromeClient } from "../../backend/services/navidrome.ts";
 import { createPlaybackPlaylistSnapshot } from "../../backend/services/playback/playbackDestination.ts";
 import type { RequestUser } from "../../backend/middleware/requestUser.ts";
@@ -27,7 +27,7 @@ const [
   { playlistManager },
   { downloadWorker },
   { queueQualityUpgrade },
-  { registerJobs },
+  { api },
   { processPlaylistOperation },
   libraryStore,
   downloadUtils,
@@ -47,7 +47,7 @@ const [
   () => import("../../backend/services/playlists/playlistManager.ts"),
   () => import("../../backend/services/downloadJobs/downloadWorker.ts"),
   () => import("../../backend/services/qualityProfileService.ts"),
-  () => import("../../backend/routes/playlists/handlers/jobs.ts"),
+  () => import("../../backend/routes/api.ts"),
   () => import("../../backend/services/playlists/playlistOperations.ts"),
   () => import("../../backend/services/libraryMediaStore.ts"),
   () => import("../../backend/services/downloadUtils.ts"),
@@ -78,8 +78,6 @@ const {
   registerDownloadProviderWork,
 } = cancellationModule;
 
-const app = express();
-app.use(express.json());
 type ListedJob = {
   id: string;
   artistName: string;
@@ -93,22 +91,8 @@ type ListedJob = {
 
 const admin: RequestUser = { id: 1, username: "admin", role: "admin", permissions: {} };
 let requestUser = admin;
-app.use((req, _res, next) => {
-  req.user = requestUser;
-  next();
-});
-const router = express.Router();
-registerJobs(router);
-app.use(router);
-const server = await new Promise<
-  import("node:http").Server<
-    typeof import("node:http").IncomingMessage,
-    typeof import("node:http").ServerResponse
-  >
->((resolve) => {
-  const listener = app.listen(0, "127.0.0.1", () => resolve(listener));
-});
-const baseUrl = `http://127.0.0.1:${listeningAddress(server).port}`;
+const server = await listen(signedInAs(() => requestUser).route("/api", api));
+const baseUrl = `http://127.0.0.1:${listeningAddress(server).port}/api/playlists`;
 
 playlistManager.navidromeDestination.client = Object.assign(
   new NavidromeClient("http://navidrome.test", "user", "password"),
@@ -862,7 +846,12 @@ test("search all stays within the requesting user's playlist access", async () =
 
   const originalStart = downloadWorker.start;
   downloadWorker.start = async () => {};
-  requestUser = { id: owner.id, username: "owner", role: "user", permissions: {} };
+  requestUser = {
+    id: owner.id,
+    username: "owner",
+    role: "user",
+    permissions: { accessFlow: true },
+  };
   try {
     const missingResponse = await fetch(`${baseUrl}/research-missing`, { method: "POST" });
     const missingPayload = await missingResponse.json();
@@ -936,7 +925,7 @@ test("wanted covers every library job regardless of playlist access", async () =
 
   const originalStart = downloadWorker.start;
   downloadWorker.start = async () => {};
-  requestUser = { id: 9, username: "listener", role: "user", permissions: {} };
+  requestUser = { id: 9, username: "listener", role: "user", permissions: { accessFlow: true } };
   try {
     const jobsPayload: ListedJob[] = await (await fetch(`${baseUrl}/jobs`)).json();
     const listed = new Map(jobsPayload.map((job) => [job.id, job]));

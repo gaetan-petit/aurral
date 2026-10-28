@@ -2,7 +2,7 @@ import { test, beforeAll, beforeEach, afterAll } from "vite-plus/test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
-import express from "express";
+import { listen, signedInAs } from "../helpers/honoApp.ts";
 
 import {
   cleanupIsolatedState,
@@ -18,8 +18,7 @@ const [
   managementStore,
   { downloadTracker },
   { downloadWorker },
-  { registerJobs },
-  { registerTracks },
+  { api },
   { getMetadataBaseUrl },
   { setMetadataProviderCooldown },
 ] = await setupIsolatedBackend(
@@ -30,8 +29,7 @@ const [
   () => import("../../backend/services/libraryManagementStore.ts"),
   () => import("../../backend/services/downloadJobs/downloadTracker.ts"),
   () => import("../../backend/services/downloadJobs/downloadWorker.ts"),
-  () => import("../../backend/routes/playlists/handlers/jobs.ts"),
-  () => import("../../backend/routes/library/handlers/tracks.ts"),
+  () => import("../../backend/routes/api.ts"),
   () => import("../../backend/services/providers/brainzmashProvider.ts"),
   () => import("../../backend/services/metadataProviderBudget.ts"),
 );
@@ -39,19 +37,9 @@ const [
 // instead of making each one wait its turn in the provider's rate limit.
 setMetadataProviderCooldown(getMetadataBaseUrl(), 403, Number.MAX_SAFE_INTEGER);
 
-const app = express();
-app.use(express.json());
-app.use((req, _res, next) => {
-  req.user = { id: 1, username: "test", role: "admin", permissions: {} };
-  next();
-});
-const router = express.Router();
-registerJobs(router);
-registerTracks(router);
-app.use(router);
-const server = await new Promise<import("node:http").Server>((resolve) => {
-  const listener = app.listen(0, "127.0.0.1", () => resolve(listener));
-});
+const server = await listen(
+  signedInAs({ id: 1, username: "test", role: "admin", permissions: {} }).route("/api", api),
+);
 const address = server.address();
 assert.ok(address && typeof address !== "string");
 const baseUrl = `http://127.0.0.1:${address.port}`;
@@ -153,11 +141,14 @@ const keepFile = (jobId: string | null) => {
       "SELECT id FROM library_tracks WHERE mbid = ?",
     )
     .get(getJob(jobId).trackMbid)!;
-  return request<{ keepFile: boolean; cancelledJobIds: string[] }>(`/tracks/aurral/${id}`, {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ keepFile: true }),
-  });
+  return request<{ keepFile: boolean; cancelledJobIds: string[] }>(
+    `/api/library/tracks/aurral/${id}`,
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ keepFile: true }),
+    },
+  );
 };
 
 const upgradeJobsOf = (jobId: string | null) =>
@@ -223,7 +214,7 @@ test("Wanted reports jobs by their track's monitoring, whatever the album's", as
   });
 
   const monitoredById = new Map(
-    (await request<{ id: string; monitored: boolean }[]>("/jobs")).map((job) => [
+    (await request<{ id: string; monitored: boolean }[]>("/api/playlists/jobs")).map((job) => [
       job.id,
       job.monitored,
     ]),
@@ -271,8 +262,12 @@ test("Search all in Wanted skips unmonitored tracks and keeps monitored tracks o
     trackMonitored: true,
   });
 
-  const missing = await request<{ requeued: number }>("/research-missing", { method: "POST" });
-  const upgrades = await request<{ queued: number }>("/quality-upgrades", { method: "POST" });
+  const missing = await request<{ requeued: number }>("/api/playlists/research-missing", {
+    method: "POST",
+  });
+  const upgrades = await request<{ queued: number }>("/api/playlists/quality-upgrades", {
+    method: "POST",
+  });
 
   assert.equal(missing.requeued, 1);
   assert.deepEqual(
@@ -308,7 +303,9 @@ test("Keep this file stops upgrades of that file and cancels the upgrade already
   await keepFile(keptLibraryFile);
   downloadTracker.removeJob(keptLibraryFile);
 
-  const first = await request<{ queued: number }>("/quality-upgrades", { method: "POST" });
+  const first = await request<{ queued: number }>("/api/playlists/quality-upgrades", {
+    method: "POST",
+  });
   assert.equal(first.queued, 2);
   assert.deepEqual(
     [kept, other, keptBeforeCheck].map((jobId) => upgradeJobsOf(jobId).length),
@@ -329,11 +326,15 @@ test("Keep this file stops upgrades of that file and cancels the upgrade already
   assert.notEqual(upgradeJobsOf(other)[0].status, "cancelled");
   assert.equal(getJob(kept).status, "done");
 
-  const second = await request<{ queued: number }>("/quality-upgrades", { method: "POST" });
+  const second = await request<{ queued: number }>("/api/playlists/quality-upgrades", {
+    method: "POST",
+  });
   assert.equal(second.queued, 0);
   assert.equal(upgradeJobsOf(kept).length, 1);
 
-  const direct = await fetch(`${baseUrl}/quality-upgrades/library/${kept}`, { method: "POST" });
+  const direct = await fetch(`${baseUrl}/api/playlists/quality-upgrades/library/${kept}`, {
+    method: "POST",
+  });
   assert.equal(direct.status, 409);
   assert.equal((await direct.json()).code, "kept_file");
   assert.equal(upgradeJobsOf(kept).length, 1);

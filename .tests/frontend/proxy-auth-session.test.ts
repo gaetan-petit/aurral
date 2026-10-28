@@ -30,9 +30,9 @@ test("proxy-authenticated requests carry the issued Aurral session token", async
     return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
   };
 
-  const { default: api } = await import("../../frontend/src/utils/api/core.ts");
+  const { apiFetch } = await import("../../frontend/src/utils/api/core.ts");
 
-  await api.get("/health/bootstrap");
+  await apiFetch("/api/health/bootstrap");
   assert.equal(sentAuthorization, "Bearer session-token");
 });
 
@@ -76,9 +76,12 @@ test("a proxy auth redirect drops the service worker and reloads through the pro
     text: async () => "",
   }));
 
-  const { default: api } = await import("../../frontend/src/utils/api/core.ts");
+  const { apiFetch } = await import("../../frontend/src/utils/api/core.ts");
 
-  await assert.rejects(api.get("/health/bootstrap"), /redirected to an authentication provider/);
+  await assert.rejects(
+    apiFetch("/api/health/bootstrap"),
+    /redirected to an authentication provider/,
+  );
   await reloaded.promise;
 
   assert.equal(unregistered.length, 1);
@@ -115,9 +118,9 @@ test("an unauthorized response drops the stored session without navigating away"
       headers: { "content-type": "application/json" },
     });
 
-  const { default: api } = await import("../../frontend/src/utils/api/core.ts");
+  const { apiFetch } = await import("../../frontend/src/utils/api/core.ts");
 
-  await assert.rejects(api.get("/health/bootstrap"), /status code 401/);
+  await assert.rejects(apiFetch("/api/health/bootstrap"), /status code 401/);
   assert.equal(globalThis.localStorage.getItem("auth_token"), null);
   assert.equal(globalThis.sessionStorage.getItem("auth_token"), null);
   assert.equal(globalThis.window.location.href, currentUrl);
@@ -153,9 +156,9 @@ test("a proxy 401 with a nested error body reauthenticates through the proxy", a
       },
     );
 
-  const { default: api } = await import("../../frontend/src/utils/api/core.ts");
+  const { apiFetch } = await import("../../frontend/src/utils/api/core.ts");
 
-  await assert.rejects(api.get("/playlists/import/spotify/playlists"), /status code 401/);
+  await assert.rejects(apiFetch("/api/playlists/import/spotify/playlists"), /status code 401/);
   await reloadCompleted;
   assert.equal(reloads, 1);
   assert.equal(globalThis.localStorage.getItem("auth_token"), null);
@@ -190,9 +193,9 @@ test("a Spotify provider 401 does not drop the Aurral session", async (t) => {
       },
     );
 
-  const { default: api } = await import("../../frontend/src/utils/api/core.ts");
+  const { apiFetch } = await import("../../frontend/src/utils/api/core.ts");
 
-  await assert.rejects(api.get("/playlists/import/spotify/playlists"), /status code 401/);
+  await assert.rejects(apiFetch("/api/playlists/import/spotify/playlists"), /status code 401/);
   assert.equal(reloads, 0);
   assert.equal(globalThis.localStorage.getItem("auth_token"), "valid-token");
   assert.equal(globalThis.sessionStorage.getItem("auth_token"), "valid-token");
@@ -221,9 +224,9 @@ test("a proxy 401 without an Aurral error body reloads through the proxy", async
       headers: { "content-type": "text/html" },
     });
 
-  const { default: api } = await import("../../frontend/src/utils/api/core.ts");
+  const { apiFetch } = await import("../../frontend/src/utils/api/core.ts");
 
-  await assert.rejects(api.get("/health/bootstrap"), /status code 401/);
+  await assert.rejects(apiFetch("/api/health/bootstrap"), /status code 401/);
   await reloaded.promise;
   assert.equal(reloads, 1);
 });
@@ -240,8 +243,14 @@ test("a failed login response keeps the stored session untouched", async (t) => 
       headers: { "content-type": "application/json" },
     });
 
-  const { default: api } = await import("../../frontend/src/utils/api/core.ts");
+  const { apiFetch } = await import("../../frontend/src/utils/api/core.ts");
 
-  await assert.rejects(api.post("/auth/login", { username: "a", password: "b" }), /401/);
+  await assert.rejects(
+    apiFetch("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username: "a", password: "b" }),
+    }),
+    /401/,
+  );
   assert.equal(globalThis.localStorage.getItem("auth_token"), "existing-token");
 });

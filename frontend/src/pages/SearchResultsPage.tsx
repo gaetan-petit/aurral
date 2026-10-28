@@ -9,10 +9,12 @@ import {
   lookupAlbumsInLibraryBatch,
   requestAlbumFromSearch,
   settleLibraryOwnerConflict,
+  type ArtistsInLibrary,
 } from "../utils/api/endpoints/library.ts";
-import { addStaticPlaylistTracks, createStaticPlaylist } from "../utils/api/endpoints/playlists.ts";
-import type { LookupArtistsInLibraryBatchResponse } from "../../../backend/routes/library/handlers/misc.ts";
-import { getDiscovery } from "../utils/api/endpoints/discovery.ts";
+import { parseResponse } from "hono/client";
+import { staticPlaylistsClient } from "../utils/api/clients/staticPlaylists.ts";
+import { discoveryClient } from "../utils/api/clients/discovery.ts";
+import type { DiscoverResponse } from "./discoverUtils";
 import { DotLoader } from "../components/DotLoader";
 import { SkeletonSearchResults, SkeletonStatus } from "../components/Skeletons";
 import { getArtistCover, getReleaseGroupCover } from "../utils/api/endpoints/artists.ts";
@@ -81,7 +83,7 @@ import {
 import TooltipButton from "../components/TooltipButton";
 import Tooltip from "../components/Tooltip";
 
-type DiscoverPage = Awaited<ReturnType<typeof getDiscovery>>;
+type DiscoverPage = DiscoverResponse;
 type UnifiedSearchResponse = Awaited<ReturnType<typeof searchUnified>>;
 type CatalogSearchPage = Awaited<ReturnType<typeof searchCatalog>>;
 type SearchPage = DiscoverPage | UnifiedSearchResponse | CatalogSearchPage;
@@ -129,9 +131,7 @@ const getDefaultRecommendedSort = (pageType: string | null) =>
     ? { key: "match", direction: "desc" }
     : { key: "name", direction: "asc" };
 const EMPTY_SEARCH_PAGES: SearchPage[] = [];
-const combineLibraryLookup = (
-  queries: { data?: LookupArtistsInLibraryBatchResponse }[],
-): LookupArtistsInLibraryBatchResponse =>
+const combineLibraryLookup = (queries: { data?: ArtistsInLibrary }[]): ArtistsInLibrary =>
   Object.assign({}, ...queries.map((query) => query.data || {}));
 const LIBRARY_RESULT_LIMIT = 6;
 
@@ -337,11 +337,17 @@ function SearchResultsPage() {
     initialPageParam: 0,
     queryFn: ({ pageParam, signal }): Promise<SearchPage> => {
       if (normalizedType === "recommended" || normalizedType === "trending") {
-        return getDiscovery({
-          offset: pageParam,
-          limit: pagedRecommendations ? PAGE_SIZE : undefined,
-          signal,
-        });
+        return parseResponse(
+          discoveryClient.$get(
+            {
+              query: {
+                offset: String(pageParam),
+                limit: pagedRecommendations ? String(PAGE_SIZE) : undefined,
+              },
+            },
+            { init: { signal } },
+          ),
+        );
       }
       if (isUnifiedSearch) {
         return searchUnified(trimmedQuery, {
@@ -1044,18 +1050,27 @@ function SearchResultsPage() {
       try {
         if (target?.mode === "new") {
           const name = String(target?.name || "").trim() || "Playlist";
-          await createStaticPlaylist({
-            name,
-            tracks: [payload],
-          });
+          await parseResponse(
+            staticPlaylistsClient["shared-playlists"].$post({
+              json: {
+                name,
+                tracks: [payload],
+              },
+            }),
+          );
           showSuccess(`Track saved to ${name}`);
         } else {
           const targetPlaylist = staticPlaylists.find(
             (playlist) => playlist.id === target?.playlistId,
           );
-          await addStaticPlaylistTracks(target.playlistId, {
-            tracks: [payload],
-          });
+          await parseResponse(
+            staticPlaylistsClient["shared-playlists"][":playlistId"].tracks.$post({
+              param: { playlistId: encodeURIComponent(target.playlistId) },
+              json: {
+                tracks: [payload],
+              },
+            }),
+          );
           showSuccess(`Track added to ${targetPlaylist?.name || "playlist"}`);
         }
         const nextPlaylists = await loadStaticPlaylists();

@@ -1,11 +1,10 @@
 import { useCallback, useId, useMemo, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
-import type { ReleaseGroupTrack } from "../../../../backend/routes/artists/handlers/releaseGroup.ts";
+import type { ReleaseGroupTrack } from "../../utils/api/endpoints/artists.ts";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   getArtistCover,
   getArtistDetails,
-  fetchArtistOverrides,
   getArtistPreview,
   getSimilarArtistsForArtist,
   updateArtistOverrides,
@@ -14,10 +13,9 @@ import {
   downloadTrackToLibrary,
   lookupArtistInLibrary,
 } from "../../utils/api/endpoints/library.ts";
-import {
-  addStaticPlaylistTracks,
-  createStaticPlaylist,
-} from "../../utils/api/endpoints/playlists.ts";
+import { parseResponse } from "hono/client";
+import { artistsClient } from "../../utils/api/clients/artists.ts";
+import { staticPlaylistsClient } from "../../utils/api/clients/staticPlaylists.ts";
 import {
   buildStaticPlaylistTrackPayload,
   buildTasteArtist,
@@ -105,7 +103,13 @@ function ArtistDetailsPage() {
 
   const artistOverridesQuery = useQuery({
     queryKey: queryKeys.artistOverrides(mbid),
-    queryFn: ({ signal }) => fetchArtistOverrides(mbid, { signal }),
+    queryFn: ({ signal }) =>
+      parseResponse(
+        artistsClient[":mbid"].overrides.$get(
+          { param: { mbid: encodeURIComponent(mbid ?? "") } },
+          { init: { signal } },
+        ),
+      ),
     enabled: false,
     staleTime: 30_000,
   });
@@ -399,18 +403,27 @@ function ArtistDetailsPage() {
         const name =
           String(target?.name || "").trim() ||
           reserveUniquePlaylistName(staticPlaylists, `${trackPayload.artistName} Picks`);
-        await createStaticPlaylist({
-          name,
-          tracks: [trackPayload],
-        });
+        await parseResponse(
+          staticPlaylistsClient["shared-playlists"].$post({
+            json: {
+              name,
+              tracks: [trackPayload],
+            },
+          }),
+        );
         showSuccess(`Track saved to ${name}`);
       } else {
         const targetPlaylist = staticPlaylists.find(
           (playlist) => playlist.id === target?.playlistId,
         );
-        await addStaticPlaylistTracks(target.playlistId, {
-          tracks: [trackPayload],
-        });
+        await parseResponse(
+          staticPlaylistsClient["shared-playlists"][":playlistId"].tracks.$post({
+            param: { playlistId: encodeURIComponent(target.playlistId) },
+            json: {
+              tracks: [trackPayload],
+            },
+          }),
+        );
         showSuccess(`Track added to ${targetPlaylist?.name || "playlist"}`);
       }
       const nextPlaylists = await loadStaticPlaylists();

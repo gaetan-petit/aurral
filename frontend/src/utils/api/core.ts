@@ -8,7 +8,8 @@ const getDefaultApiBaseUrl = () => {
   return `${basePath}/api`;
 };
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || getDefaultApiBaseUrl();
+export const API_BASE_URL = import.meta.env.VITE_API_URL || getDefaultApiBaseUrl();
+const REQUEST_TIMEOUT_MS = 30000;
 
 export interface ApiErrorBody {
   message?: string;
@@ -32,32 +33,10 @@ export function asApiError(error: unknown): ApiError | undefined {
   return error instanceof Error ? error : undefined;
 }
 
-interface RequestConfig {
-  method?: string;
-  url?: string;
-  params?: Record<string, unknown>;
-  data?: unknown;
-  headers?: Record<string, string>;
-  signal?: AbortSignal;
-  timeout?: number;
-  keepalive?: boolean;
-}
-
 function joinUrl(baseURL: string, url: string) {
   if (!url) return baseURL;
   if (String(url).startsWith("http://") || String(url).startsWith("https://")) return url;
   return `${String(baseURL).replace(/\/+$/, "")}/${String(url).replace(/^\/+/, "")}`;
-}
-
-function appendParams(url: string, params: Record<string, unknown> | undefined) {
-  if (!params || typeof params !== "object") return url;
-  const search = new URLSearchParams();
-  for (const [key, value] of Object.entries(params)) {
-    if (value != null && value !== "") search.set(key, String(value));
-  }
-  const query = search.toString();
-  if (!query) return url;
-  return `${url}${url.includes("?") ? "&" : "?"}${query}`;
 }
 
 const REAUTH_COOLDOWN_MS = 30000;
@@ -81,104 +60,67 @@ const reauthenticateThroughProxy = () => {
   void dropServiceWorker().then(() => window.location.reload());
 };
 
-async function request(config: RequestConfig) {
-  const method = String(config.method || "GET").toUpperCase();
-  let url = appendParams(joinUrl(API_BASE_URL, config.url || ""), config.params);
-  const controller = new AbortController();
-  const callerSignal = config.signal;
-  const abortFromCaller = () => controller.abort(callerSignal?.reason);
-  if (callerSignal?.aborted) {
-    abortFromCaller();
-  } else {
-    callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
-  }
-  const timeoutMs = Number(config.timeout ?? 30000);
-  const timer = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
-  const isBinaryData = config.data instanceof Blob || config.data instanceof FormData;
-  const headers: Record<string, string> = {
-    ...(isBinaryData ? {} : { "Content-Type": "application/json" }),
-    ...config.headers,
-  };
-  const token = getRequestToken();
-  if (token) headers.Authorization = `Bearer ${token}`;
-  const urlPath = String(config.url || "");
-  const isAuthEndpoint = urlPath.includes("/auth/login") || urlPath.includes("/auth/logout");
-
+async function readBody(res: Response): Promise<unknown> {
+  if (!(res.headers.get("content-type") || "").includes("json")) return res.text();
   try {
-    const init: RequestInit = { method, headers, signal: controller.signal, redirect: "manual" };
-    if (config.data != null && method !== "GET" && method !== "HEAD") {
-      if (typeof config.data === "string" || isBinaryData) {
-        init.body = config.data as BodyInit;
-      } else {
-        init.body = JSON.stringify(config.data);
-      }
-    }
-    if (config.keepalive && (typeof init.body !== "string" || init.body.length < 60_000)) {
-      init.keepalive = true;
-    }
-    const res = await fetch(url, init);
-
-    if (res.type === "opaqueredirect") {
-      if (!isAuthEndpoint) reauthenticateThroughProxy();
-      throw new Error("Request was redirected to an authentication provider");
-    }
-
-    const contentType = res.headers.get("content-type") || "";
-    let data: unknown;
-    if (contentType.includes("json")) {
-      try {
-        data = await res.json();
-      } catch {
-        data = null;
-      }
-    } else {
-      data = await res.text();
-    }
-    const response = { status: res.status, statusText: res.statusText, headers: res.headers, data };
-    if (!res.ok) {
-      const error: ApiError = new Error(`Request failed with status code ${res.status}`);
-      const errorData: ApiErrorResponse["data"] =
-        typeof data === "string" || typeof data === "object" ? data : null;
-      error.response = {
-        status: res.status,
-        statusText: res.statusText,
-        headers: res.headers,
-        data: errorData,
-      };
-      if (res.status === 401 && !isAuthEndpoint) {
-        const body = typeof errorData === "object" && errorData ? errorData : undefined;
-        const isAurralAuthError =
-          body?.error === "Unauthorized" ||
-          body?.code === "AUTH_REQUIRED" ||
-          body?.code === "SESSION_INVALID";
-        if (isAurralAuthError) {
-          clearAuthStorage();
-        } else if (body?.error && typeof body.error === "object") {
-          reauthenticateThroughProxy();
-        } else if (!body?.error) {
-          reauthenticateThroughProxy();
-        }
-      }
-      throw error;
-    }
-    return response;
-  } finally {
-    if (timer) clearTimeout(timer);
-    callerSignal?.removeEventListener("abort", abortFromCaller);
+    return await res.json();
+  } catch {
+    return null;
   }
 }
 
-const api = {
-  get: (url: string, config: RequestConfig = {}) => request({ ...config, method: "GET", url }),
-  post: (url: string, data?: unknown, config: RequestConfig = {}) =>
-    request({ ...config, method: "POST", url, data }),
-  put: (url: string, data?: unknown, config: RequestConfig = {}) =>
-    request({ ...config, method: "PUT", url, data }),
-  patch: (url: string, data?: unknown, config: RequestConfig = {}) =>
-    request({ ...config, method: "PATCH", url, data }),
-  delete: (url: string, config: RequestConfig = {}) =>
-    request({ ...config, method: "DELETE", url }),
-};
+async function ensureOk(res: Response, url: string) {
+  const isAuthEndpoint = url.includes("/auth/login") || url.includes("/auth/logout");
+  if (res.type === "opaqueredirect") {
+    if (!isAuthEndpoint) reauthenticateThroughProxy();
+    throw new Error("Request was redirected to an authentication provider");
+  }
+  if (res.ok) return res;
+
+  const data = await readBody(res);
+  const error: ApiError = new Error(`Request failed with status code ${res.status}`);
+  const errorData: ApiErrorResponse["data"] =
+    typeof data === "string" || typeof data === "object" ? data : null;
+  error.response = {
+    status: res.status,
+    statusText: res.statusText,
+    headers: res.headers,
+    data: errorData,
+  };
+  if (res.status === 401 && !isAuthEndpoint) {
+    const body = typeof errorData === "object" && errorData ? errorData : undefined;
+    const isAurralAuthError =
+      body?.error === "Unauthorized" ||
+      body?.code === "AUTH_REQUIRED" ||
+      body?.code === "SESSION_INVALID";
+    if (isAurralAuthError) {
+      clearAuthStorage();
+    } else if (body?.error && typeof body.error === "object") {
+      reauthenticateThroughProxy();
+    } else if (!body?.error) {
+      reauthenticateThroughProxy();
+    }
+  }
+  throw error;
+}
+
+export const apiFetchWithin =
+  (timeoutMs: number) =>
+  async (input: RequestInfo | URL, init: RequestInit = {}) => {
+    const headers = new Headers(init.headers);
+    const token = getRequestToken();
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    const timeout = AbortSignal.timeout(timeoutMs);
+    const res = await fetch(input, {
+      ...init,
+      headers,
+      signal: init.signal ? AbortSignal.any([init.signal, timeout]) : timeout,
+      redirect: "manual",
+    });
+    return ensureOk(res, input instanceof Request ? input.url : String(input));
+  };
+
+export const apiFetch = apiFetchWithin(REQUEST_TIMEOUT_MS);
 
 const AUTH_TOKEN_KEY = "auth_token";
 
@@ -286,19 +228,6 @@ export const fetchCoverWithMemo = async <T extends CoverCacheValue>(
   );
 };
 
-const responseData = <T>(req: Promise<{ data: unknown }>): Promise<T> =>
-  req.then((response) => response.data as T);
-export const getData = <T>(url: string, config?: RequestConfig): Promise<T> =>
-  responseData<T>(api.get(url, config));
-export const postData = <T>(url: string, data?: unknown, config?: RequestConfig): Promise<T> =>
-  responseData<T>(api.post(url, data, config));
-export const putData = <T>(url: string, data?: unknown, config?: RequestConfig): Promise<T> =>
-  responseData<T>(api.put(url, data, config));
-export const patchData = <T>(url: string, data?: unknown, config?: RequestConfig): Promise<T> =>
-  responseData<T>(api.patch(url, data, config));
-export const deleteData = <T>(url: string, config?: RequestConfig): Promise<T> =>
-  responseData<T>(api.delete(url, config));
-
 export const lidarrCredentialParams = (
   url: string | undefined,
   apiKey: string | undefined,
@@ -333,5 +262,3 @@ export const resolveAuthenticatedApiAssetUrl = (value: string | null | undefined
   const url = String(value || "");
   return url.startsWith("/api/") ? buildAuthenticatedApiUrl(url.replace(/^\/api/, "")) : url;
 };
-
-export default api;

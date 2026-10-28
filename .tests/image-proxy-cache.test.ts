@@ -2,12 +2,14 @@ import { requireFixture } from "./playlists/fixtures.ts";
 import { listeningAddress } from "./helpers/backendTestHarness.ts";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
-import express from "express";
+import { Hono } from "hono";
 import os from "node:os";
 import path from "node:path";
 import { test, vi } from "vite-plus/test";
 import { randomBytes } from "node:crypto";
+import type { AppEnv } from "../backend/middleware/requestUser.ts";
 import { createIsolatedStateDir } from "./helpers/backendTestHarness.ts";
+import { listen } from "./helpers/honoApp.ts";
 
 test(
   "cached artwork remains available while a remote refresh fails",
@@ -51,22 +53,16 @@ test(
       );
       await fs.unlink(cached.imagePath);
       vi.resetModules();
-      const { warmImageProxy, handleImageProxyRequest } =
-        await import("../backend/services/imageProxyService.ts");
-      const app = express();
-      app.get("/api/image-proxy/:cacheKey", (req, res, next) => {
-        const pending = handleImageProxyRequest(req, res);
-        localStarted.resolve();
-        pending.catch((error) => next(error));
-      });
-      server = await new Promise<
-        import("node:http").Server<
-          typeof import("node:http").IncomingMessage,
-          typeof import("node:http").ServerResponse
-        >
-      >((resolve) => {
-        const listener = app.listen(0, "127.0.0.1", () => resolve(listener));
-      });
+      const { warmImageProxy } = await import("../backend/services/imageProxyService.ts");
+      const { default: imageProxy } = await import("../backend/routes/imageProxy.ts");
+      server = await listen(
+        new Hono<AppEnv>()
+          .use(async (_c, next) => {
+            localStarted.resolve();
+            await next();
+          })
+          .route("/api", imageProxy),
+      );
       const base = `http://127.0.0.1:${listeningAddress(requireFixture(server)).port}`;
       const missing = await originalFetch(
         `${base}/api/image-proxy/${randomBytes(32).toString("hex")}.webp`,
@@ -221,25 +217,12 @@ test("image proxy serves cached images from hidden worktree paths", async () => 
     global.fetch = async () => new Response(png, { headers: { "content-type": "image/png" } });
 
     vi.resetModules();
-    const { handleImageProxyRequest, warmImageProxy } =
-      await import("../backend/services/imageProxyService.ts");
+    const { warmImageProxy } = await import("../backend/services/imageProxyService.ts");
+    const { default: imageProxy } = await import("../backend/routes/imageProxy.ts");
     const cached = await warmImageProxy("https://images.example/hidden-path.png");
     global.fetch = originalFetch;
 
-    const app = express();
-    app.get("/api/image-proxy/:cacheKey", handleImageProxyRequest);
-    const handleError: import("express").ErrorRequestHandler = (error: Error, _req, res, _next) => {
-      res.status(500).json({ error: error.message });
-    };
-    app.use(handleError);
-    server = await new Promise<
-      import("node:http").Server<
-        typeof import("node:http").IncomingMessage,
-        typeof import("node:http").ServerResponse
-      >
-    >((resolve) => {
-      const listener = app.listen(0, "127.0.0.1", () => resolve(listener));
-    });
+    server = await listen(new Hono<AppEnv>().route("/api", imageProxy));
 
     const response = await fetch(
       `http://127.0.0.1:${listeningAddress(requireFixture(server)).port}${cached.localUrl}`,

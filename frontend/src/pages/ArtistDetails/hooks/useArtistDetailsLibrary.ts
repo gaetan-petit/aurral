@@ -1,19 +1,19 @@
 import { useMemo, useState, useEffect, useRef } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { parseResponse, type InferResponseType } from "hono/client";
+import { libraryAlbumsClient } from "../../../utils/api/clients/libraryAlbums.ts";
+import { libraryArtistsClient } from "../../../utils/api/clients/libraryArtists.ts";
 import {
   getLibraryAlbums,
-  updateLibraryAlbum,
-  deleteAlbumFromLibrary,
-  deleteAurralAlbumFromLibrary,
   getLibraryArtist,
   triggerAlbumSearch,
-  refreshLibraryArtist,
   getDownloadStatus,
   addArtistToLibrary,
   lookupArtistInLibrary,
   requestAlbumFromSearch,
   setAurralAlbumMonitoring,
   settleLibraryOwnerConflict,
+  type AlbumRequestResult,
   type AurralMonitoringResult,
 } from "../../../utils/api/endpoints/library.ts";
 import {
@@ -25,7 +25,7 @@ import {
 import { describeArtistAdd } from "../../../utils/artistMonitoring.ts";
 import { describeAlbumRequestResult } from "../../../utils/albumAddAction.ts";
 import { buildAurralAlbumRetryPayload } from "../../../utils/aurralAlbumStatus.ts";
-import { getMyLidarrPreferences } from "../../../utils/api/endpoints/auth.ts";
+import { usersClient } from "../../../utils/api/clients/users.ts";
 import {
   deduplicateAlbums,
   getApiErrorMessage,
@@ -39,9 +39,6 @@ import type { DownloadStatusEntry } from "../../../../../backend/services/websoc
 import type { LibraryArtistRecord, useArtistDetailsStream } from "./useArtistDetailsStream.ts";
 import type { useToast } from "../../../contexts/ToastContext.tsx";
 import type { useLibraryDestination } from "../../../hooks/useLibraryDestination.ts";
-import type { RequestAlbumFromSearchResponse } from "../../../../../backend/routes/library/handlers/albums.ts";
-import type { AddArtistToLibraryResponse } from "../../../../../backend/routes/library/handlers/artists.ts";
-import type { GetArtistMonitoringResponse } from "../../../../../backend/routes/library/handlers/artists.ts";
 
 const DELETE_FILES_PREFERENCE_KEY = "aurral:library-delete-files";
 
@@ -59,11 +56,18 @@ type DeleteAlbumTarget = {
 export type LibraryAlbumId = string | number;
 type LibraryAlbums = ArtistDetailsStream["libraryAlbums"];
 export type LibraryAlbum = LibraryAlbums[number];
+type ArtistMonitoring = InferResponseType<
+  (typeof libraryArtistsClient.artists)[":mbid"]["monitoring"]["$get"],
+  200
+>;
 type AlbumSearchResult =
-  | RequestAlbumFromSearchResponse
+  | AlbumRequestResult
   | (AurralMonitoringResult & { status?: undefined; albumStatus?: undefined })
   | null;
-type LidarrPreferences = Awaited<ReturnType<typeof getMyLidarrPreferences>>;
+type LidarrPreferences = InferResponseType<
+  (typeof usersClient.me)["lidarr-preferences"]["$get"],
+  200
+>;
 type ArtistAddLidarrOptions = NonNullable<
   Parameters<typeof buildArtistAddPayload>[0]["lidarrOptions"]
 >;
@@ -185,7 +189,8 @@ export function useArtistDetailsLibrary({
   });
   const lidarrPreferencesQuery = useQuery({
     queryKey: queryKeys.lidarrPreferences("current"),
-    queryFn: ({ signal }) => getMyLidarrPreferences({ signal }),
+    queryFn: ({ signal }) =>
+      parseResponse(usersClient.me["lidarr-preferences"].$get({}, { init: { signal } })),
     enabled: false,
     staleTime: 30_000,
   });
@@ -248,23 +253,28 @@ export function useArtistDetailsLibrary({
     refetchIntervalInBackground: false,
   });
   const { refetch: refetchLibraryAlbums } = libraryAlbumsQuery;
-  const refreshArtistMutation = useMutation({ mutationFn: refreshLibraryArtist });
+  const refreshArtistMutation = useMutation({
+    mutationFn: (mbid: string | null | undefined) =>
+      parseResponse(
+        libraryArtistsClient.artists[":mbid"].refresh.$post({
+          param: { mbid: encodeURIComponent(String(mbid)) },
+        }),
+      ),
+  });
   const addArtistMutation = useMutation({
     mutationFn: addArtistToLibrary,
     onMutate: async (payload) => {
       const queryKey = queryKeys.artistMonitoring(payload.foreignArtistId);
       await queryClient.cancelQueries({ queryKey });
       const previous = queryClient.getQueryData(queryKey);
-      const optimistic = queryClient.setQueryData<GetArtistMonitoringResponse>(
-        queryKey,
-        (current) =>
-          current
-            ? {
-                ...current,
-                added: true,
-                monitorOption: payload.monitorOption || current.monitorOption || "none",
-              }
-            : current,
+      const optimistic = queryClient.setQueryData<ArtistMonitoring>(queryKey, (current) =>
+        current
+          ? {
+              ...current,
+              added: true,
+              monitorOption: payload.monitorOption || current.monitorOption || "none",
+            }
+          : current,
       );
       return { queryKey, previous, optimistic };
     },
@@ -286,17 +296,32 @@ export function useArtistDetailsLibrary({
   });
   const updateAlbumMutation = useMutation({
     mutationFn: ({ id, data }: { id: string | number; data: { monitored?: boolean } }) =>
-      updateLibraryAlbum(id, data),
+      parseResponse(
+        libraryAlbumsClient.albums[":id"].$put({
+          param: { id: encodeURIComponent(id) },
+          json: data,
+        }),
+      ),
     onSuccess: () => invalidateLibraryQueries(),
   });
   const deleteAlbumMutation = useMutation({
     mutationFn: ({ id, deleteFiles }: { id: string | number; deleteFiles: boolean }) =>
-      deleteAlbumFromLibrary(id, deleteFiles),
+      parseResponse(
+        libraryAlbumsClient.albums[":id"].$delete({
+          param: { id: encodeURIComponent(id) },
+          query: { deleteFiles: String(deleteFiles) },
+        }),
+      ),
     onSuccess: () => invalidateLibraryQueries(),
   });
   const deleteAurralAlbumMutation = useMutation({
     mutationFn: ({ id, deleteFiles }: { id: string | number; deleteFiles: boolean }) =>
-      deleteAurralAlbumFromLibrary(id, deleteFiles),
+      parseResponse(
+        libraryAlbumsClient.albums.aurral[":canonicalId"].$delete({
+          param: { canonicalId: encodeURIComponent(id) },
+          query: { deleteFiles: String(deleteFiles) },
+        }),
+      ),
     onSuccess: () => invalidateLibraryQueries(),
   });
   const searchAlbumMutation = useMutation({
@@ -422,7 +447,7 @@ export function useArtistDetailsLibrary({
   };
 
   const resolveArtistFromAddResponse = async (
-    result: AddArtistToLibraryResponse | null,
+    result: Awaited<ReturnType<typeof addArtistToLibrary>> | null,
     { refresh = true, hydrateAlbums = true }: { refresh?: boolean; hydrateAlbums?: boolean } = {},
   ) => {
     if (!result?.artist) return null;
@@ -583,13 +608,17 @@ export function useArtistDetailsLibrary({
         throw new Error("The album request did not complete");
       }
       const addedAlbumId = addedAlbum.id;
+      const addedArtistId = addedArtist.id;
 
       setLibraryArtist((previous) => {
         const foreignArtistId = addedArtist.foreignArtistId || addedArtist.mbid || artistMbid;
-        if (addedArtist.managedBy) return { ...previous, ...addedArtist, foreignArtistId };
+        if (addedArtist.managedBy) {
+          return { ...previous, ...addedArtist, id: addedArtistId, foreignArtistId };
+        }
         return {
           ...previous,
           ...addedArtist,
+          id: addedArtistId,
           managedBy: previous?.managedBy || null,
           foreignArtistId,
         };

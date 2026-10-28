@@ -1,4 +1,5 @@
-import { createAuthRequest, createAuthResponse } from "./authFixtures.ts";
+import { signedInAs } from "../helpers/honoApp.ts";
+import { testUser } from "../helpers/userFixtures.ts";
 import { test, beforeEach, afterAll } from "vite-plus/test";
 import assert from "node:assert/strict";
 import { createSign, generateKeyPairSync } from "node:crypto";
@@ -10,16 +11,18 @@ import {
   resetDatabase,
 } from "../helpers/backendTestHarness.ts";
 
-const [isolatedState, { db }, dbHelpers, sessionModule, googleModule] = await setupIsolatedBackend(
-  "google-auth",
-  () => import("../../backend/config/db-sqlite.ts"),
-  () => import("../../backend/db/helpers/index.ts"),
-  () => import("../../backend/config/session-helpers.ts"),
-  () => import("../../backend/services/googleAuth.ts"),
-);
+const [isolatedState, { db }, dbHelpers, sessionModule, googleModule, { api }] =
+  await setupIsolatedBackend(
+    "google-auth",
+    () => import("../../backend/config/db-sqlite.ts"),
+    () => import("../../backend/db/helpers/index.ts"),
+    () => import("../../backend/config/session-helpers.ts"),
+    () => import("../../backend/services/googleAuth.ts"),
+    () => import("../../backend/routes/api.ts"),
+  );
 
 const { dbOps, userOps, userIdentityOps } = dbHelpers;
-const { getSessionByToken } = sessionModule;
+const { createSession, getSessionByToken } = sessionModule;
 const {
   startGoogleAuth,
   handleGoogleCallback,
@@ -29,6 +32,14 @@ const {
 } = googleModule;
 
 const completeOnboarding = () => dbOps.updateSettings({ onboardingComplete: true });
+
+const exchangeRequest = ({
+  headers = {},
+  ip = null,
+}: {
+  headers?: { cookie?: string; "user-agent"?: string };
+  ip?: string | null;
+}) => ({ cookie: headers.cookie, ip, userAgent: headers["user-agent"] ?? null });
 
 const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const googleKey = {
@@ -73,10 +84,7 @@ function enableGoogleConfig(issuer: string) {
   });
 }
 
-async function createPendingGoogleAuth(
-  mode: Parameters<typeof startGoogleAuth>[2],
-  claimOverrides = {},
-) {
+async function createGoogleIssuer(claimOverrides = {}) {
   let issuer: string;
   let nonce: string | null;
   const discoveryServer = await createMockHttpServer((request, response) => {
@@ -108,27 +116,36 @@ async function createPendingGoogleAuth(
   setGoogleIssuerForTests(issuer);
   enableGoogleConfig(issuer);
 
-  const response = createAuthResponse();
-  await startGoogleAuth(createAuthRequest({ headers: {} }), response, mode);
-  const redirect = new URL(response.location || response.body?.authUrl || "");
-  const state = redirect.searchParams.get("state");
+  return {
+    useNonceFrom(authUrl: string) {
+      nonce = new URL(authUrl).searchParams.get("nonce");
+    },
+    close: discoveryServer.close,
+  };
+}
+
+async function createPendingGoogleAuth(
+  mode: Parameters<typeof startGoogleAuth>[0],
+  claimOverrides = {},
+) {
+  const issuer = await createGoogleIssuer(claimOverrides);
+  const login = await startGoogleAuth(mode);
+  assert.ok(login, "Google login must be enabled");
+  issuer.useNonceFrom(login.authUrl);
+  const state = new URL(login.authUrl).searchParams.get("state");
   assert.ok(state);
-  nonce = redirect.searchParams.get("nonce");
-  const cookie = response.headers["Set-Cookie"].split(";", 1)[0];
-  return { state, cookie, response, close: discoveryServer.close };
+  const cookie = login.cookie.split(";", 1)[0];
+  return { state, cookie, close: issuer.close };
 }
 
 async function completeGoogleAuth(pending: Awaited<ReturnType<typeof createPendingGoogleAuth>>) {
   const callback = await handleGoogleCallback(
-    createAuthRequest({
-      query: { state: pending.state, code: "authorization-code" },
-      headers: { cookie: pending.cookie },
-      ip: "127.0.0.1",
-    }),
+    { state: pending.state, code: "authorization-code" },
+    pending.cookie,
   );
   return exchangeGoogleCallback(
     callback.code,
-    createAuthRequest({
+    exchangeRequest({
       headers: { cookie: pending.cookie, "user-agent": "test-agent" },
       ip: "127.0.0.1",
     }),
@@ -164,17 +181,23 @@ test("Google login is disabled until enabled, clientId, clientSecret and redirec
 });
 
 test("Google account linking can return an authorization URL to an authenticated API caller", async () => {
-  const pending = await createPendingGoogleAuth({
-    mode: "link",
-    linkUserId: 42,
-    returnUrl: true,
-  });
+  completeOnboarding();
+  const user = userOps.createUser("linker", "unused-hash", "user");
+  assert.ok(user != null);
+  const { token } = createSession(user.id);
+  const issuer = await createGoogleIssuer();
   try {
-    assert.match(pending.response.body?.authUrl || "", /^http/);
-    assert.equal(pending.response.location, undefined);
-    assert.ok(pending.cookie.startsWith("aurral_google_transaction="));
+    const app = signedInAs(testUser(user.id)).route("/", api);
+    const response = await app.request("/auth/google/link/start", {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    assert.equal(response.status, 200);
+    assert.match((await response.json()).authUrl, /^http/);
+    assert.equal(response.headers.get("location"), null);
+    assert.ok(response.headers.get("set-cookie")?.startsWith("aurral_google_transaction="));
   } finally {
-    await pending.close();
+    await issuer.close();
   }
 });
 
@@ -244,11 +267,8 @@ test("linking a Google identity already claimed by another user is rejected with
     await assert.rejects(
       () =>
         handleGoogleCallback(
-          createAuthRequest({
-            query: { state: secondLink.state, code: "authorization-code" },
-            headers: { cookie: secondLink.cookie },
-            ip: "127.0.0.1",
-          }),
+          { state: secondLink.state, code: "authorization-code" },
+          secondLink.cookie,
         ),
       { status: 409 },
     );
@@ -297,13 +317,7 @@ test("a suspended user cannot complete a Google link", async () => {
   try {
     await assert.rejects(
       () =>
-        handleGoogleCallback(
-          createAuthRequest({
-            query: { state: pending.state, code: "authorization-code" },
-            headers: { cookie: pending.cookie },
-            ip: "127.0.0.1",
-          }),
-        ),
+        handleGoogleCallback({ state: pending.state, code: "authorization-code" }, pending.cookie),
       { status: 403, message: "This account has been suspended or disabled" },
     );
   } finally {
@@ -335,7 +349,7 @@ test("Google exchange never leaks passwordHash, for linking or login", async () 
 });
 
 test("exchangeGoogleCallback rejects a code that was never issued", () => {
-  assert.throws(() => exchangeGoogleCallback("bogus-code", createAuthRequest({ headers: {} })), {
+  assert.throws(() => exchangeGoogleCallback("bogus-code", exchangeRequest({ headers: {} })), {
     status: 400,
     message: "Google login session expired",
   });

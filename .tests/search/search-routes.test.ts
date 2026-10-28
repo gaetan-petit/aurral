@@ -2,7 +2,7 @@ import { requireFixture } from "../playlists/fixtures.ts";
 import { listeningAddress } from "../helpers/backendTestHarness.ts";
 import assert from "node:assert/strict";
 import { test, beforeAll, beforeEach, afterAll, vi } from "vite-plus/test";
-import express from "express";
+import { listen, signedInAs } from "../helpers/honoApp.ts";
 import {
   buildTrackPlaylistPayload,
   type SearchSuggestionTrack,
@@ -19,29 +19,27 @@ const [
   { db },
   { dbOps, userOps },
   libraryStore,
-  { default: searchRouter },
   provider,
-  { registerStaticPlaylists },
+  { api },
   { flowPlaylistConfig },
   { downloadTracker },
   { playlistManager },
   { downloadWorker },
   playlistOperations,
-  honker,
+  { playlistOperationQueue },
 ] = await setupIsolatedBackend(
   "search-routes",
   () => import("../../backend/config/db-sqlite.ts"),
   () => import("../../backend/db/helpers/index.ts"),
   () => import("../../backend/services/libraryMediaStore.ts"),
-  () => import("../../backend/routes/search.ts"),
   () => import("../../backend/services/providers/brainzmashProvider.ts"),
-  () => import("../../backend/routes/playlists/handlers/staticPlaylists.ts"),
+  () => import("../../backend/routes/api.ts"),
   () => import("../../backend/services/playlists/flowPlaylistConfig.ts"),
   () => import("../../backend/services/downloadJobs/downloadTracker.ts"),
   () => import("../../backend/services/playlists/playlistManager.ts"),
   () => import("../../backend/services/downloadJobs/downloadWorker.ts"),
   () => import("../../backend/services/playlists/playlistOperations.ts"),
-  () => import("../../backend/services/honkerDb.ts"),
+  () => import("../../backend/services/playlists/playlistOperationQueue.ts"),
 );
 
 let app: {
@@ -81,23 +79,11 @@ beforeAll(async () => {
     },
   });
 
-  user = requireFixture(userOps.createUser("search-routes-user", "unused"));
-  const playlistsRouter = express.Router();
-  registerStaticPlaylists(playlistsRouter);
-  const expressApp = express();
-  expressApp.use(express.json());
-  expressApp.use((req, _res, next) => {
-    req.user = user;
-    next();
-  });
-  expressApp.use("/api/search", searchRouter);
-  expressApp.use("/api/playlists", playlistsRouter);
-  await new Promise<void>((resolve) => {
-    const server = expressApp.listen(0, "127.0.0.1", () => {
-      app = { url: `http://127.0.0.1:${listeningAddress(server)!.port}`, server };
-      resolve();
-    });
-  });
+  user = requireFixture(
+    userOps.createUser("search-routes-user", "unused", "user", { accessFlow: true }),
+  );
+  const server = await listen(signedInAs(() => user).route("/api", api));
+  app = { url: `http://127.0.0.1:${listeningAddress(server).port}`, server };
 });
 
 beforeEach(() => {
@@ -207,6 +193,11 @@ test("adding library search results to a new static playlist keeps their MusicBr
   vi.spyOn(playlistManager, "requestPlaylistSync").mockImplementation(() => null);
   vi.spyOn(playlistManager, "scheduleScanLibrary").mockImplementation(() => 0);
   vi.spyOn(downloadWorker, "start").mockImplementation(async () => false);
+  const queuedOperations: import("../../backend/services/honkerDb.ts").HonkerPayload[] = [];
+  vi.spyOn(playlistOperationQueue, "enqueuePayload").mockImplementation(async (payload = {}) => {
+    queuedOperations.push(payload);
+    return { queued: true, operationId: queuedOperations.length };
+  });
   const artist = libraryStore.upsertLibraryArtist({
     identityKey: "search-routes:beacon-artist",
     mbid: "5b11f4ce-a62d-471e-81fc-a69a8278c7da",
@@ -256,12 +247,8 @@ test("adding library search results to a new static playlist keeps their MusicBr
     body: JSON.stringify({ name: "Beacon Picks", tracks: payloads }),
   });
   assert.equal(created.status, 200);
-  const operation = honker.getPlaylistOperationQueue().claimOne("search-routes");
-  assert.ok(operation != null);
-  const { payload } = operation;
-  assert.ok(typeof payload === "object" && payload !== null && !Array.isArray(payload));
-  await playlistOperations.processPlaylistOperation(payload);
-  operation.ack();
+  assert.equal(queuedOperations.length, 1);
+  await playlistOperations.processPlaylistOperation(queuedOperations[0]);
 
   const playlist = flowPlaylistConfig
     .getStaticPlaylistsForUser(user)

@@ -1,9 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import type { ArtistDetailsResponse } from "../../../../../backend/routes/artists/handlers/details.ts";
-import type { SimilarArtistsResponse } from "../../../../../backend/routes/artists/handlers/similar.ts";
+import type { ArtistDetailsResponse } from "../../../utils/api/endpoints/artists.ts";
+import type { SimilarArtistsResponse } from "../../../utils/api/endpoints/artists.ts";
 import { getApiErrorMessage, type ArtistCoverImage } from "../utils";
-import type { RequestAlbumFromSearchResponse } from "../../../../../backend/routes/library/handlers/albums.ts";
-import type { FetchLibraryArtistResponse } from "../../../../../backend/routes/library/handlers/artists.ts";
 import {
   getArtistDetails,
   getArtistCover,
@@ -15,8 +13,11 @@ import {
   getLibraryAlbums,
   getLibraryArtist,
   readLibraryLookupCache,
+  type AlbumRequestResult,
+  type LibraryArtist,
 } from "../../../utils/api/endpoints/library.ts";
-import { getAppSettings, type AppSettingsResponse } from "../../../utils/api/endpoints/settings.ts";
+import { parseResponse } from "hono/client";
+import { settingsClient, type AppSettingsResponse } from "../../../utils/api/clients/settings.ts";
 import { getStoredAuth } from "../../../utils/api/core.ts";
 import { queryClient, queryKeys } from "../../../queryClient.ts";
 import { useWebSocketChannel } from "../../../hooks/useWebSocket.ts";
@@ -27,7 +28,7 @@ type ReleaseGroupList = NonNullable<ArtistDetails["appears-on-release-groups"]>;
 type ReleaseGroup = NonNullable<ArtistDetails["release-groups"]>[number];
 export type LibraryAlbumEntry = {
   id: string | number;
-  canonicalId?: string;
+  canonicalId?: string | number;
   mbid?: string | null;
   foreignAlbumId?: string | null;
   albumName?: string | null;
@@ -41,8 +42,8 @@ export type LibraryAlbumEntry = {
 };
 export type LibraryAlbums = LibraryAlbumEntry[];
 export type LookupArtist = NonNullable<Awaited<ReturnType<typeof lookupArtistInLibrary>>["artist"]>;
-export type AddedLibraryArtist = NonNullable<RequestAlbumFromSearchResponse["artist"]>;
-export type LibraryArtistRecord = FetchLibraryArtistResponse | LookupArtist | AddedLibraryArtist;
+export type AddedLibraryArtist = NonNullable<AlbumRequestResult["artist"]>;
+export type LibraryArtistRecord = LibraryArtist | LookupArtist | AddedLibraryArtist;
 
 const buildReleaseGroupCoverRequest = (
   rgId: string,
@@ -253,7 +254,12 @@ export function useArtistDetailsStream(
     setExistsInLibrary(nextSeededExistsInLibrary === true);
     setLoadingLibrary(nextSeededExistsInLibrary === undefined);
 
-    getAppSettings()
+    queryClient
+      .fetchQuery({
+        queryKey: queryKeys.appSettings,
+        queryFn: ({ signal }) => parseResponse(settingsClient.$get({}, { init: { signal } })),
+        staleTime: 30_000,
+      })
       .then((settings) => {
         if (isCurrentRequest()) {
           setAppSettings(settings);

@@ -3,7 +3,8 @@ import {
   lookupArtistsInLibraryBatch,
   readLibraryLookupCache,
 } from "../utils/api/endpoints/library.ts";
-import { getMyDiscoverLayout, updateMyDiscoverLayout } from "../utils/api/endpoints/auth.ts";
+import { parseResponse } from "hono/client";
+import { usersClient } from "../utils/api/clients/users.ts";
 
 import { Sparkles, LayoutTemplate } from "../components/icons";
 import { DotLoader } from "../components/DotLoader";
@@ -37,6 +38,7 @@ import {
   normalizeDiscoverLayout,
   readStoredDiscoverLayout,
   writeStoredDiscoverLayout,
+  type DiscoverSection,
 } from "./discoverUtils";
 import { useDiscoverData } from "./useDiscoverData";
 import { useLibraryNews } from "../hooks/useLibraryNews";
@@ -45,6 +47,10 @@ import TooltipButton from "../components/TooltipButton";
 import RouteLink from "../components/RouteLink";
 import type { DiscoveryBasedOn } from "../../../backend/db/helpers/discovery.ts";
 const getArtistId = (artist: DiscoverCardArtist) => getArtistRecordId(artist);
+
+const loadServerLayout = () => parseResponse(usersClient.me["discover-layout"].$get());
+const saveServerLayout = (layout: DiscoverSection[]) =>
+  parseResponse(usersClient.me["discover-layout"].$patch({ json: { layout } }));
 
 const SECTION_CARD_KINDS = new Map<
   string,
@@ -112,8 +118,8 @@ function DiscoverPage() {
     normalizeLayout: normalizeDiscoverLayout,
     readStoredLayout: readStoredDiscoverLayout,
     writeStoredLayout: writeStoredDiscoverLayout,
-    loadServerLayout: getMyDiscoverLayout,
-    saveServerLayout: updateMyDiscoverLayout,
+    loadServerLayout,
+    saveServerLayout,
     showSuccess,
     showError,
   });

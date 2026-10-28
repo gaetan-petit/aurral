@@ -1,12 +1,10 @@
-import { createAuthRequest } from "./authFixtures.ts";
-import { test, beforeAll, beforeEach, afterAll, vi } from "vite-plus/test";
+import { test, beforeEach, afterAll, vi } from "vite-plus/test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 
 import bcrypt from "bcrypt";
-import express from "express";
 
 import {
   setupIsolatedBackend,
@@ -20,44 +18,28 @@ const [
   { userOps, dbOps },
   { createSession },
   auth,
-  permissions,
   { hashPassword },
   { encryptWithKey },
-  { default: subsonicRouter },
+  { default: subsonic },
 ] = await setupIsolatedBackend(
   "recent-auth",
   () => import("../../backend/config/db-sqlite.ts"),
   () => import("../../backend/db/helpers/index.ts"),
   () => import("../../backend/config/session-helpers.ts"),
   () => import("../../backend/middleware/auth.ts"),
-  () => import("../../backend/middleware/requirePermission.ts"),
   () => import("../../backend/middleware/passwordHash.ts"),
   () => import("../../backend/config/encryption.ts"),
   () => import("../../backend/routes/subsonic.ts"),
 );
 
-let subsonicServer: import("node:http").Server;
-
-beforeAll(async () => {
-  const app = express();
-  app.use("/rest", express.urlencoded({ extended: false }), subsonicRouter);
-  subsonicServer = await new Promise<import("node:http").Server>((resolve) => {
-    const listener = app.listen(0, "127.0.0.1", () => resolve(listener));
-  });
-});
 beforeEach(() => resetDatabase(db));
-afterAll(async () => {
-  await new Promise<void>((resolve) => subsonicServer.close(() => resolve()));
-  await cleanupIsolatedState(isolatedState);
-});
+afterAll(() => cleanupIsolatedState(isolatedState));
 
 async function subsonicPing(
   params: { u: string; t: string; s: string } | { u: string; p: string },
 ) {
   const query = new URLSearchParams({ v: "1.16.1", c: "auth-test", f: "json", ...params });
-  const response = await fetch(
-    `http://127.0.0.1:${(subsonicServer.address() as import("node:net").AddressInfo).port}/rest/ping.view?${query}`,
-  );
+  const response = await subsonic.request(`/rest/ping.view?${query}`);
   return (await response.json())["subsonic-response"];
 }
 
@@ -79,34 +61,24 @@ test("recent authentication requires a valid bearer session", () => {
   assert.ok(user != null);
   const session = createSession(user.id);
 
-  assert.equal(permissions.isRecentlyAuthenticated(createAuthRequest({ headers: {} })), false);
-  assert.equal(
-    permissions.isRecentlyAuthenticated(
-      createAuthRequest({
-        headers: { authorization: `Bearer ${session.token}` },
-      }),
-    ),
-    true,
-  );
+  assert.equal(auth.isRecentlyAuthenticated(undefined), false);
+  assert.equal(auth.isRecentlyAuthenticated(`Bearer ${session.token}`), true);
 });
 
 test("stream requests need sign-in once an account exists, even without a stored single password", () => {
-  const anonymous = createAuthRequest({
-    headers: {},
-    query: {},
-    ip: "203.0.113.9",
-  });
-  assert.equal(auth.verifyTokenAuth(createAuthRequest({ ...anonymous })), true);
+  const anonymous = { headers: {}, ip: "203.0.113.9" };
+  assert.equal(auth.isAuthRequiredByConfig(), false);
 
   dbOps.updateSettings({ onboardingComplete: true });
   const user = userOps.createUser("stream-owner", bcrypt.hashSync("password123", 4), "admin");
   assert.ok(user != null);
-  assert.equal(auth.verifyTokenAuth(createAuthRequest({ ...anonymous })), false);
+  assert.equal(auth.isAuthRequiredByConfig(), true);
+  assert.equal(auth.resolveTokenUser(anonymous), null);
 
   const session = createSession(user.id);
   assert.equal(
-    auth.verifyTokenAuth(createAuthRequest({ ...anonymous, query: { token: session.token } })),
-    true,
+    auth.resolveTokenUser({ ...anonymous, query: { token: session.token } })?.id,
+    user.id,
   );
 });
 
@@ -262,10 +234,7 @@ test("Basic authentication cannot restore legacy admin access for an inactive da
   userOps.updateUser(user.id, { status: "suspended" });
   const basic = Buffer.from(`configured-admin:${password}`).toString("base64");
 
-  assert.equal(
-    auth.resolveRequestUser(createAuthRequest({ headers: { authorization: `Basic ${basic}` } })),
-    null,
-  );
+  assert.equal(auth.resolveRequestUser({ headers: { authorization: `Basic ${basic}` } }), null);
 });
 
 test("trusted-local bypass rejects an inactive sole administrator", () => {
