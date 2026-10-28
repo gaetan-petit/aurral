@@ -5,6 +5,7 @@ import createRateLimiter from "./rateLimiter.ts";
 interface DeezerArtist {
   id?: number | string;
   name?: string;
+  picture_xl?: string;
   picture_big?: string;
   picture_medium?: string;
   picture?: string;
@@ -29,6 +30,7 @@ interface DeezerAlbum {
   record_type?: string;
   type?: string;
   release_date?: string;
+  cover_xl?: string;
   cover_big?: string;
   cover_medium?: string;
   cover?: string;
@@ -70,6 +72,11 @@ const deezerLimiter = createRateLimiter(110);
 
 const isDeezerOutage = (data: { error?: { code?: number } } | null | undefined) =>
   Boolean(data?.error) && data?.error?.code !== 800;
+
+const deezerArtistPhoto = (artist: DeezerArtist) => {
+  const url = artist.picture_xl || artist.picture_big || artist.picture_medium;
+  return url && !url.includes("/images/artist//") ? url : null;
+};
 
 async function cachedOrInflight<T>(
   cache: ReturnType<typeof createCache>,
@@ -125,7 +132,7 @@ export async function getDeezerArtist(
 ) {
   const wanted = artistNameKey(artistName);
   if (!wanted) return null;
-  const cacheKey = `name:${wanted}`;
+  const cacheKey = `name:${artistName.toLowerCase().trim()}`;
 
   try {
     return await cachedOrInflight(deezerArtistCache, cacheKey, deezerInflightRequests, async () => {
@@ -143,7 +150,7 @@ export async function getDeezerArtist(
         ? {
             id: match.id,
             name: match.name,
-            imageUrl: match.picture_big || match.picture_medium || match.picture || null,
+            imageUrl: deezerArtistPhoto(match),
           }
         : null;
       deezerArtistCache.set(cacheKey, result);
@@ -177,7 +184,7 @@ export async function getDeezerArtistById(
       const result = {
         id: data.id,
         name: data.name || null,
-        imageUrl: data.picture_big || data.picture_medium || data.picture || null,
+        imageUrl: deezerArtistPhoto(data),
       };
       deezerArtistCache.set(cacheKey, result);
       return result;
@@ -212,6 +219,38 @@ async function getDeezerArtistTopTracksById(artistId: DeezerArtistId) {
       }));
     deezerTopTrackCache.set(cacheKey, tracks);
     return tracks;
+  });
+}
+
+export async function deezerGetRelatedArtists(
+  artistId: DeezerArtistId,
+  { limit = 25 }: { limit?: number } = {},
+) {
+  const normalizedId = String(artistId || "").trim();
+  if (!normalizedId) return [];
+  const safeLimit = Math.min(100, Math.max(1, Number(limit) || 25));
+  const cacheKey = `related:${normalizedId}:${safeLimit}`;
+  return cachedOrInflight(deezerArtistCache, cacheKey, deezerInflightRequests, async () => {
+    const response = await deezerLimiter.schedule(() =>
+      axios.get(`https://api.deezer.com/artist/${normalizedId}/related`, {
+        params: { limit: safeLimit },
+        timeout: 5000,
+      }),
+    );
+    if (isDeezerOutage(response.data)) throw new Error("Deezer related artists unavailable");
+    const rows: DeezerArtist[] = response.data?.data || [];
+    const artists = rows.flatMap((artist) =>
+      artist?.id && artist.name?.trim()
+        ? [
+            {
+              name: artist.name.trim(),
+              image: deezerArtistPhoto(artist),
+            },
+          ]
+        : [],
+    );
+    deezerArtistCache.set(cacheKey, artists);
+    return artists;
   });
 }
 
@@ -413,7 +452,7 @@ export async function getDeezerAlbumsForArtist(
           "first-release-date": releaseDate ? releaseDate.slice(0, 4) : null,
           "primary-type": primaryType,
           "secondary-types": [],
-          _coverUrl: a.cover_big || a.cover_medium || a.cover || null,
+          _coverUrl: a.cover_xl || a.cover_big || a.cover_medium || a.cover || null,
           fans: typeof a.fans === "number" ? a.fans : 0,
           _normalizedTitle: normalizeTitle(title),
           _releaseDate: releaseDate,
