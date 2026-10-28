@@ -152,6 +152,8 @@ export function buildIdentityKey(prefix: string, value: unknown) {
   return `${prefix}:${normalized}`;
 }
 
+const MBID_GLOB = [8, 4, 4, 4, 12].map((length) => "[0-9a-f]".repeat(length)).join("-");
+
 export function buildFallbackIdentityKey(...parts: unknown[]) {
   return joinFallbackKey(normalizeKeyPart, parts);
 }
@@ -305,19 +307,28 @@ function mergeLibraryArtistInto(
   return changed;
 }
 
+const albumTitles = (json: string) => {
+  const titles: unknown = JSON.parse(json);
+  return Array.isArray(titles)
+    ? titles.filter((title): title is string => typeof title === "string")
+    : [];
+};
+
 export function getUnresolvedLibraryArtists() {
   return db
-    .prepare<[], Pick<LibraryArtistsRow, "id" | "name">>(
-      `SELECT DISTINCT artist.id, artist.name
+    .prepare<[], Pick<LibraryArtistsRow, "id" | "name"> & { albums: string }>(
+      `SELECT artist.id, artist.name, json_group_array(DISTINCT album.title) AS albums
      FROM library_artists AS artist
      JOIN library_albums AS album ON album.artist_id = artist.id
      JOIN library_media_files AS media ON media.album_id = album.id AND media.available = 1
      WHERE artist.mbid IS NULL
        AND (NOT json_valid(artist.metadata_json)
          OR json_extract(artist.metadata_json, '$.mbidSource') IS NOT 'manual')
+     GROUP BY artist.id
      ORDER BY artist.id`,
     )
-    .all();
+    .all()
+    .map((artist) => ({ ...artist, albums: albumTitles(artist.albums) }));
 }
 
 export type UnresolvedLibraryArtist = ReturnType<typeof getUnresolvedLibraryArtists>[number];
@@ -451,21 +462,21 @@ export function upsertLibraryArtist({
     const findResolvedArtist = () => {
       const credited = JSON.stringify(creditedMbids);
       const exact = db
-        .prepare<[string, string], LibraryArtistsRow>(
+        .prepare<[string, string, string], LibraryArtistsRow>(
           `SELECT * FROM library_artists
-           WHERE mbid IS NOT NULL AND name = ? COLLATE NOCASE
+           WHERE lower(mbid) GLOB ? AND name = ? COLLATE NOCASE
              AND mbid NOT IN (SELECT value FROM json_each(?))
            ORDER BY id
            LIMIT 2`,
         )
-        .all(artistName, credited);
+        .all(MBID_GLOB, artistName, credited);
       if (exact.length === 1) return exact[0];
       // ponytail: normalized duplicate repair scans artist rows; add a persisted normalized name if this becomes hot.
       const matches = db
-        .prepare<[string], LibraryArtistsRow>(
-          "SELECT * FROM library_artists WHERE mbid IS NOT NULL AND mbid NOT IN (SELECT value FROM json_each(?))",
+        .prepare<[string, string], LibraryArtistsRow>(
+          "SELECT * FROM library_artists WHERE lower(mbid) GLOB ? AND mbid NOT IN (SELECT value FROM json_each(?))",
         )
-        .all(credited)
+        .all(MBID_GLOB, credited)
         .filter((row) => buildFallbackIdentityKey("artist", row.name) === fallbackKey);
       return matches.length === 1 ? matches[0] : null;
     };
@@ -1514,6 +1525,76 @@ export function getLibraryAlbumsToList() {
 
 export type LibraryAlbumToList = ReturnType<typeof getLibraryAlbumsToList>[number];
 
+// A lookup that found nothing waits until the album's artist, title, or songs
+// change, or a full scan asks again.
+export function getUntaggedLibraryAlbums({ retry = false }: { retry?: boolean } = {}) {
+  const albums = db
+    .prepare<
+      [],
+      Pick<LibraryAlbumsRow, "id" | "title"> & {
+        releaseDate: string | null;
+        artistName: string;
+        artistMbid: string;
+        lookedUpFor: string | null;
+      }
+    >(
+      `SELECT album.id, album.title, album.release_date AS releaseDate,
+       artist.name AS artistName, artist.mbid AS artistMbid,
+       CASE WHEN json_valid(album.metadata_json) THEN json_extract(album.metadata_json, '$.releaseGroupLookup') END AS lookedUpFor
+     FROM library_albums AS album
+     JOIN library_artists AS artist ON artist.id = album.artist_id
+     WHERE album.mbid IS NULL AND album.release_group_mbid IS NULL AND artist.mbid IS NOT NULL
+     ORDER BY album.id`,
+    )
+    .all();
+  const albumSongs = db.prepare<[number], Pick<LibraryTracksRow, "mbid" | "title">>(
+    `SELECT DISTINCT track.mbid, track.title
+     FROM library_album_tracks AS link
+     JOIN library_tracks AS track ON track.id = link.track_id
+     JOIN library_media_files AS media ON media.track_id = track.id
+       AND media.album_id = link.album_id AND media.available = 1
+     WHERE link.album_id = ?
+     ORDER BY track.title, track.mbid`,
+  );
+  return albums.flatMap(({ lookedUpFor, ...album }) => {
+    const files = albumSongs.all(album.id);
+    const basis = createHash("sha1")
+      .update(JSON.stringify([album.artistMbid, album.title, files]))
+      .digest("hex");
+    return files.length && (retry || lookedUpFor !== basis) ? [{ ...album, files, basis }] : [];
+  });
+}
+
+export type UntaggedLibraryAlbum = ReturnType<typeof getUntaggedLibraryAlbums>[number];
+
+export function noteLibraryAlbumLookup(albumId: number, basis: string) {
+  db.prepare<[string, number]>(
+    `UPDATE library_albums
+     SET metadata_json = json_set(
+       CASE WHEN NOT json_valid(metadata_json) THEN '{}' WHEN json_type(metadata_json) = 'object' THEN metadata_json ELSE '{}' END,
+       '$.releaseGroupLookup', ?)
+     WHERE id = ?`,
+  ).run(basis, albumId);
+}
+
+// The album becomes the release group's, as if its files were tagged, and
+// joins the Library's album of that release group when there is one.
+export function assignLibraryAlbumReleaseGroup(albumId: number, releaseGroupMbid: string) {
+  const key = buildIdentityKey("release-group", releaseGroupMbid);
+  if (!key) return null;
+  const id = db.transaction(() => {
+    const kept = rekeyLibraryAlbum(albumId, key);
+    if (kept != null) {
+      db.prepare<[string, number]>(
+        "UPDATE library_albums SET release_group_mbid = ? WHERE id = ? AND release_group_mbid IS NULL",
+      ).run(releaseGroupMbid, kept);
+    }
+    return kept;
+  })();
+  if (id != null) invalidateLibraryCache();
+  return id;
+}
+
 type ReleaseTrack = Partial<
   Pick<
     NormalizedTrack,
@@ -1922,8 +2003,6 @@ const legacyAlbumKeyBuilders = ({
       ((part: KeyPart) =>
         joinFallbackKey(part, ["album", buildIdentityKey("mbid", artistMbid), title])),
   ].filter(Boolean) as KeyBuilder[];
-
-const MBID_GLOB = [8, 4, 4, 4, 12].map((length) => "[0-9a-f]".repeat(length)).join("-");
 
 const keyedByForeignIds = (table: string, prefixes: string[]) =>
   db
