@@ -67,7 +67,10 @@ export function ArtistDetailsPreviewTracks({
               const trackId = String(track.id || `${track.title}-${index}`);
               const isPlaying = isArtistPlaybackActive && String(playingPreviewId) === trackId;
               return (
-                <div key={trackId} className="artist-track-row artist-track-row--preview">
+                <div
+                  key={trackId}
+                  className={`artist-track-row artist-track-row--preview${isPlaying ? " is-active" : ""}`}
+                >
                   <span className="artist-track-number">{index + 1}</span>
                   <TooltipButton
                     type="button"
@@ -83,6 +86,17 @@ export function ArtistDetailsPreviewTracks({
                       <Play className="artist-icon-sm" />
                     )}
                   </TooltipButton>
+                  {track.artworkUrl ? (
+                    <img
+                      className="artist-track-thumb"
+                      src={track.artworkUrl}
+                      alt=""
+                      loading="lazy"
+                      decoding="async"
+                    />
+                  ) : (
+                    <span className="artist-track-thumb" aria-hidden="true" />
+                  )}
                   <div className="artist-track-cell">
                     <p className="artist-track-title">{track.title}</p>
                     <p className="artist-track-subtitle">{track.album || "Preview available"}</p>

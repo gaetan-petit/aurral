@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback, type ComponentProps } from "react";
+import { useEffect, useMemo, useCallback, type ComponentProps } from "react";
 import {
   lookupArtistsInLibraryBatch,
   readLibraryLookupCache,
@@ -7,7 +7,7 @@ import { useQuery } from "@tanstack/react-query";
 import { parseResponse } from "hono/client";
 import { usersClient } from "../utils/api/clients/users.ts";
 
-import { Sparkles, LayoutTemplate } from "../components/icons";
+import { AlertCircle, LayoutTemplate } from "../components/icons";
 import { DotLoader } from "../components/DotLoader";
 import {
   SkeletonDiscoverCard,
@@ -48,14 +48,16 @@ import { useLibraryNews } from "../hooks/useLibraryNews";
 import { formatDate, formatRelativeTime } from "../utils/dateTime.ts";
 import TooltipButton from "../components/TooltipButton";
 import RouteLink from "../components/RouteLink";
+import { useArtistTint } from "../components/CollectionHeader";
 import { lastRecommendedPath, recommendedListPath } from "../navigation/recommendedPath";
 import { recommendationReason, seedNameSet } from "./recommendedRails";
-import type { DiscoveryBasedOn } from "../../../backend/db/helpers/discovery.ts";
 const getArtistId = (artist: DiscoverCardArtist) => getArtistRecordId(artist);
 
 const loadServerLayout = () => parseResponse(usersClient.me["discover-layout"].$get());
 const saveServerLayout = (layout: DiscoverSection[]) =>
   parseResponse(usersClient.me["discover-layout"].$patch({ json: { layout } }));
+
+const TOP_TAG_LIMIT = 12;
 
 const SECTION_CARD_KINDS = new Map<
   string,
@@ -184,7 +186,6 @@ function DiscoverPage() {
       (data.topGenres && data.topGenres.length > 0));
   const isUpdating = Boolean(discoveryStatus?.isUpdating);
   const updateProgressMessage = discoveryStatus?.updateProgressMessage || null;
-  const lastUpdated = discoveryStatus?.lastUpdated || data?.lastUpdated || null;
   const isActuallyUpdating = isUpdating && !hasData;
 
   const { recommendations = [], topGenres = [], basedOn = [] } = data || {};
@@ -223,41 +224,6 @@ function DiscoverPage() {
       ticketmasterConfigured,
     ],
   );
-
-  const heroBasedOn = useMemo(() => {
-    if (basedOn && basedOn.length > 0) return basedOn;
-    const seen = new Set();
-    const names = [];
-    for (const r of recommendations || []) {
-      const name = r.sourceArtist;
-      if (name && !seen.has(name)) {
-        seen.add(name);
-        names.push({ name });
-      }
-    }
-    return names;
-  }, [basedOn, recommendations]);
-
-  const renderBasedOnArtist = (artist: DiscoveryBasedOn, key: number) => {
-    const routeId = artist?.id || (artist?.name ? encodeURIComponent(artist.name) : "");
-    if (!routeId) {
-      return (
-        <span key={key} className="artist-discover-hero__artist-tag">
-          {artist?.name}
-        </span>
-      );
-    }
-    return (
-      <RouteLink
-        key={key}
-        to={`/artist/${routeId}`}
-        state={{ artistName: artist.name }}
-        className="artist-discover-hero__artist-tag"
-      >
-        {artist.name}
-      </RouteLink>
-    );
-  };
 
   const getArtistLibraryLink = useCallback((artist: DiscoverCardArtist) => {
     if (artist.canonicalId) {
@@ -355,7 +321,7 @@ function DiscoverPage() {
               return (
                 <div key={`artist-${artist.id}`} className="artist-discover-shelf-card">
                   <ArtistCard
-                    status="available"
+                    hideLibraryCheck
                     isInLibrary={true}
                     getLibraryLink={getArtistLibraryLink}
                     artist={{
@@ -664,7 +630,12 @@ function DiscoverPage() {
     return null;
   };
 
-  const [showFullBasedOnList, setShowFullBasedOnList] = useState(false);
+  const newestArtist = recentlyAdded[0];
+  const tint = useArtistTint(
+    getLibraryArtistImage(newestArtist),
+    newestArtist?.mbid,
+    newestArtist?.artistName,
+  );
 
   const sectionMayRender = (id: string) =>
     (id !== "news" || newsConfigured) && (id !== "recommendedShows" || ticketmasterConfigured);
@@ -686,7 +657,6 @@ function DiscoverPage() {
               </div>
               <SkeletonShape className="btn btn-icon-square btn-surface discover-page__customize-btn" />
             </div>
-            <div className="artist-discover-hero__tags-section" />
           </div>
         </section>
         <div aria-hidden="true">
@@ -702,11 +672,17 @@ function DiscoverPage() {
 
   if (error) {
     return (
-      <div className="artist-error-panel--discover">
-        <Sparkles className="artist-error-icon--discover" />
-        <h2 className="artist-error-title--discover">Unable to load discovery</h2>
-        <p className="artist-empty-message--discover">{error}</p>
-        <button onClick={() => window.location.reload()} className="btn btn-primary">
+      <div className="search-empty-panel" role="alert">
+        <div className="search-empty-panel__icon" aria-hidden="true">
+          <AlertCircle />
+        </div>
+        <h2 className="search-empty-panel__title">Couldn’t load Discover</h2>
+        <p className="search-empty-panel__message">{error}</p>
+        <button
+          type="button"
+          onClick={() => window.location.reload()}
+          className="btn btn-secondary"
+        >
           Try again
         </button>
       </div>
@@ -714,7 +690,7 @@ function DiscoverPage() {
   }
 
   return (
-    <div className="artist-discover-page">
+    <div className="artist-discover-page" style={tint ? { "--collection-tint": tint } : undefined}>
       <section className="artist-discover-hero">
         <div className="artist-discover-hero__content">
           <div className="artist-discover-hero__header">
@@ -723,47 +699,10 @@ function DiscoverPage() {
                 <h1 className="page-title">Discover</h1>
                 <DiscoveryStatusPill
                   isUpdating={isUpdating}
-                  lastUpdated={lastUpdated}
                   updateProgressMessage={updateProgressMessage}
                   error={discoveryStatus?.error}
                 />
               </div>
-              {heroBasedOn.length > 0 && (
-                <div className="artist-discover-hero__based-on">
-                  <div className="artist-discover-hero__based-on-intro">Based on:</div>
-                  {showFullBasedOnList ? (
-                    <div className="artist-discover-hero__artists-expanded">
-                      {heroBasedOn.map((artist, index) => renderBasedOnArtist(artist, index))}
-                      <button
-                        onClick={() => setShowFullBasedOnList(false)}
-                        className="artist-discover-hero__view-toggle-badge"
-                      >
-                        view less
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="artist-discover-hero__artists-collapsed">
-                      {heroBasedOn.length === 1 ? (
-                        renderBasedOnArtist(heroBasedOn[0], 0)
-                      ) : (
-                        <>
-                          {heroBasedOn
-                            .slice(0, 4)
-                            .map((artist, index) => renderBasedOnArtist(artist, index))}
-                          {heroBasedOn.length > 4 && (
-                            <button
-                              onClick={() => setShowFullBasedOnList(true)}
-                              className="artist-discover-hero__view-toggle-badge"
-                            >
-                              +{heroBasedOn.length - 4} more
-                            </button>
-                          )}{" "}
-                        </>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
             </div>
 
             <TooltipButton
@@ -776,25 +715,19 @@ function DiscoverPage() {
               <LayoutTemplate className="artist-discover-hero__customize-icon" />
             </TooltipButton>
           </div>
-
-          <div className="artist-discover-hero__tags-section">
-            {topGenres.length > 0 && (
-              <div>
-                <h3 className="artist-discover-hero__tags-section-title">Top tags:</h3>
-                <div className="artist-tag-list--discover">
-                  {topGenres.slice(0, 30).map((genre, i) => (
-                    <RouteLink
-                      key={i}
-                      to={`/search?q=${encodeURIComponent(`#${genre}`)}&type=tag`}
-                      className="artist-tag--discover"
-                    >
-                      #{genre}
-                    </RouteLink>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
+          {topGenres.length > 0 && (
+            <div className="discover-tags">
+              {topGenres.slice(0, TOP_TAG_LIMIT).map((genre) => (
+                <RouteLink
+                  key={genre}
+                  to={`/search?q=${encodeURIComponent(`#${genre}`)}&type=tag`}
+                  className="discover-tag"
+                >
+                  {genre}
+                </RouteLink>
+              ))}
+            </div>
+          )}
         </div>
       </section>
 

@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { parseResponse, type InferResponseType } from "hono/client";
 import { ArrowDown, ArrowUp, Check, Pause, Play, Plus } from "../components/icons";
 import ArtworkImage from "../components/ArtworkImage";
+import { useCollectionTint } from "../components/CollectionHeader";
 import { DiscoverRail } from "../components/DiscoverRail";
 import { DotLoader } from "../components/DotLoader";
 import RouteLink from "../components/RouteLink";
@@ -25,6 +26,7 @@ import { getApiErrorMessage } from "./onboardingUtils";
 import { TrendingArtistsRail } from "./TrendingArtistsRail";
 import { useEditorialShelf } from "./useEditorialShelf";
 import { useTrackSaveActions } from "./useTrackSaveActions";
+import { artworkHoverTint } from "../utils/imageColors.ts";
 import "./TrendingPage.css";
 
 type TrendingCharts = InferResponseType<typeof discoveryClient.trending.$get, 200>;
@@ -158,6 +160,9 @@ export default function TrendingPage() {
   const [savingPlaylist, setSavingPlaylist] = useState(false);
 
   const songs = data?.songs ?? null;
+  const lead = songs?.items[0];
+  const leadArtwork = lead?.largeArtworkUrl || lead?.artworkUrl;
+  const tint = useCollectionTint(leadArtwork);
   const tracks = useMemo(
     () => mapPreviewTracks(songs?.items, songs?.playlistId ?? "trending"),
     [songs],
@@ -241,7 +246,7 @@ export default function TrendingPage() {
           </p>
           <button
             type="button"
-            className="btn btn-secondary btn-sm"
+            className="btn btn-secondary"
             disabled={isFetching}
             onClick={() => refetch()}
           >
@@ -250,7 +255,6 @@ export default function TrendingPage() {
         </div>
       );
     }
-    const lead = songs?.items[0];
     const leadTrack = tracks[0];
     const leadPlaying = isTrackPlaying(0);
     const leadAlbumPath = lead
@@ -261,7 +265,6 @@ export default function TrendingPage() {
         })
       : null;
     const leadArtistPath = lead ? resolveArtistPath({ name: lead.artistName }) : null;
-    const leadArtwork = lead?.largeArtworkUrl || lead?.artworkUrl;
     const canSavePlaylist = hasPermission("accessFlow");
 
     return (
@@ -305,11 +308,7 @@ export default function TrendingPage() {
                   onClick={() => playFrom(0)}
                   disabled={!leadTrack.streamUrl}
                 >
-                  {leadPlaying ? (
-                    <Pause aria-hidden="true" fill="currentColor" />
-                  ) : (
-                    <Play aria-hidden="true" fill="currentColor" />
-                  )}
+                  {leadPlaying ? <Pause aria-hidden="true" /> : <Play aria-hidden="true" />}
                   {leadPlaying ? "Pause" : "Preview"}
                 </button>
                 {trackSaveActions.onAddTrackToLibrary ? (
@@ -352,7 +351,7 @@ export default function TrendingPage() {
                 {canSavePlaylist && songs.libraryPlaylistId ? (
                   <RouteLink
                     to={playlistPath(songs.libraryPlaylistId)}
-                    className="artist-discover-rail__show-all trending-section__saved"
+                    className="section-show-all trending-section__saved"
                   >
                     <Check aria-hidden="true" />
                     Saved as playlist
@@ -370,7 +369,7 @@ export default function TrendingPage() {
                 ) : null}
                 <RouteLink
                   to={editorialPlaylistPath(songs.playlistId)}
-                  className="artist-discover-rail__show-all"
+                  className="section-show-all"
                 >
                   Show all {songs.items.length}
                 </RouteLink>
@@ -395,11 +394,7 @@ export default function TrendingPage() {
                           <ArtworkImage src={song.artworkUrl} alt="" loading="lazy" />
                         ) : null}
                         <span className="trending-song__play">
-                          {playing ? (
-                            <Pause aria-hidden="true" fill="currentColor" />
-                          ) : (
-                            <Play aria-hidden="true" fill="currentColor" />
-                          )}
+                          {playing ? <Pause aria-hidden="true" /> : <Play aria-hidden="true" />}
                         </span>
                       </span>
                       <span className="trending-song__text">
@@ -435,6 +430,7 @@ export default function TrendingPage() {
                   <div
                     className="artist-discover-card artist-discover-card--album"
                     data-artwork-scope
+                    {...artworkHoverTint}
                   >
                     <div className="artist-discover-card__cover" data-artwork>
                       {album.artworkUrl ? (
@@ -516,7 +512,7 @@ export default function TrendingPage() {
   };
 
   return (
-    <div className="trending-page">
+    <div className="trending-page" style={tint ? { "--collection-tint": tint } : undefined}>
       <header className="trending-page__header">
         <h1 className="page-title">Trending</h1>
         {region || updated ? (

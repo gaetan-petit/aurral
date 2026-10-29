@@ -11,6 +11,7 @@ import SearchLibraryCheck from "../components/SearchLibraryCheck";
 import { getReleaseNavigationTarget } from "../utils/searchNavigation";
 import { getAlbumAddAction } from "../utils/albumAddAction";
 import { formatDate, formatRelativeTime } from "../utils/dateTime.ts";
+import { artworkHoverTint } from "../utils/imageColors.ts";
 import Tooltip from "../components/Tooltip";
 import RouteLink from "../components/RouteLink";
 import type { DiscoverArtist } from "./discoverUtils";
@@ -83,13 +84,14 @@ export const ArtistCard = memo(
     getLibraryLink,
     onFeedback,
     feedbackUsed = {},
+    hideLibraryCheck = false,
   }: {
     artist: DiscoverCardArtist;
     isInLibrary: boolean;
     getLibraryLink: (artist: DiscoverCardArtist) => { to: string } | null;
     onFeedback?: DiscoverFeedbackHandler;
     feedbackUsed?: Partial<Record<"more_like_this" | "less_like_this" | "block_artist", boolean>>;
-    status?: string;
+    hideLibraryCheck?: boolean;
   }) => {
     const navigateTo = artist.navigateTo || artist.id;
     const hasValidMbid = navigateTo && navigateTo !== "null" && navigateTo !== "undefined";
@@ -112,6 +114,7 @@ export const ArtistCard = memo(
         className={`artist-discover-card artist-discover-card--artist${canOpen ? "" : " is-disabled"}`}
         data-artwork-scope
         data-library-menu-target
+        {...artworkHoverTint}
       >
         <div className="artist-discover-card__cover" data-artwork>
           <ArtistImage
@@ -134,7 +137,7 @@ export const ArtistCard = memo(
                   {artist.name}
                 </span>
               </Tooltip>
-              {isInLibrary && <SearchLibraryCheck size="discover" />}
+              {isInLibrary && !hideLibraryCheck && <SearchLibraryCheck size="discover" />}
             </div>
             {artistMetaText ? (
               <Tooltip content={artistMetaText}>
@@ -172,7 +175,7 @@ export const ArtistCard = memo(
       prevProps.artist.subtitle === nextProps.artist.subtitle &&
       prevProps.artist.subtitleDetail === nextProps.artist.subtitleDetail &&
       prevProps.artist.metaText === nextProps.artist.metaText &&
-      prevProps.status === nextProps.status &&
+      prevProps.hideLibraryCheck === nextProps.hideLibraryCheck &&
       prevProps.isInLibrary === nextProps.isInLibrary &&
       prevProps.feedbackUsed?.more_like_this === nextProps.feedbackUsed?.more_like_this &&
       prevProps.feedbackUsed?.less_like_this === nextProps.feedbackUsed?.less_like_this &&
@@ -264,6 +267,7 @@ export const AlbumCard = memo(
       <div
         className={`artist-discover-card artist-discover-card--album${canOpen ? "" : " is-disabled"}`}
         data-artwork-scope
+        {...artworkHoverTint}
       >
         <div className="artist-discover-card__cover-wrap">
           <div
@@ -347,7 +351,7 @@ export const AlbumCard = memo(
 );
 
 AlbumCard.displayName = "AlbumCard";
-export const ViewAllCard = memo(({ to, label = "View all" }: { to: string; label?: string }) => {
+export const ViewAllCard = memo(({ to, label = "Show all" }: { to: string; label?: string }) => {
   return (
     <RouteLink to={to} className="artist-view-all-card--discover">
       <div className="artist-media-cell">

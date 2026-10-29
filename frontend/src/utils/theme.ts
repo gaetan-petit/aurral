@@ -120,7 +120,7 @@ export const AURRAL_THEME = {
   id: DEFAULT_THEME_ID,
   name: "Aurral",
   light: { background: "#ffffff", text: "#171717", accent: "#525252" },
-  dark: { background: "#121212", text: "#ffffff", accent: "#b3b3b3" },
+  dark: { background: "#000000", text: "#ffffff", accent: "#b3b3b3" },
 } satisfies Theme;
 
 export const BUILT_IN_THEMES: Theme[] = [AURRAL_THEME, ...THEME_PRESETS];
@@ -144,12 +144,13 @@ export function createThemePalette(seed: ThemeSeed) {
   const dark = isDarkColor(seed.background);
   const surface = normalizeHexColor(seed.background);
   const base = hexToOklch(surface);
-  const shade = (delta: number) => oklchToHex({ ...base, l: base.l + delta });
+  const shade = (delta: number, from = base.l) => oklchToHex({ ...base, l: from + delta });
+  const ladder = dark ? Math.max(base.l, 0.11) : base.l;
   const toward = dark ? 1 : -1;
-  const surfaceRaised = shade(toward * (dark ? 0.05 : 0.035));
-  const surfacePopover = shade(toward * (dark ? 0.1 : 0.075));
-  const surfaceHover = shade(toward * (dark ? 0.17 : 0.13));
-  const chrome = shade(dark ? -0.06 : -0.07);
+  const surfaceRaised = shade(toward * (dark ? 0.055 : 0.035), ladder);
+  const surfacePopover = dark ? surfaceRaised : shade(-0.075, ladder);
+  const surfaceHover = shade(toward * (dark ? 0.11 : 0.13), ladder);
+  const chrome = dark ? shade(0.005, ladder) : shade(-0.07);
 
   const textSeed =
     seed.text || oklchToHex({ l: dark ? 0.96 : 0.2, c: Math.min(base.c, 0.02), h: base.h });
@@ -176,12 +177,12 @@ export function createThemePalette(seed: ThemeSeed) {
     surfaceRaised,
     surfacePopover,
     surfaceHover,
-    surfaceSelected: mixColors(surface, accent, dark ? 0.16 : 0.1),
+    surfaceSelected: mixColors(dark ? shade(0, ladder) : surface, accent, dark ? 0.19 : 0.1),
     text,
     textMuted,
     textSubtle,
     border: withAlpha(text, 0.08),
-    borderStrong: withAlpha(text, 0.14),
+    borderStrong: withAlpha(text, dark ? 0.11 : 0.14),
     accent,
     accentContrast,
     ...status,
@@ -311,7 +312,7 @@ export function createDefaultThemeDocument(): ThemeDocument {
     version: THEME_DOCUMENT_VERSION,
     themeId: DEFAULT_THEME_ID,
     appearance: "system",
-    matchArtwork: false,
+    matchArtwork: true,
     themes: [],
   };
 }

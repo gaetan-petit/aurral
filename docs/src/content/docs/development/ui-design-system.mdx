@@ -1,15 +1,103 @@
 ---
 title: UI design system
-description: How to use Aurral's theme tokens and shared controls.
+description: Aurral's design language, theme tokens, and shared controls.
 ---
 
-Aurral's interface puts the music first. It uses compact, neutral surfaces, clear focus and disabled states, and images only where they help. The theme tokens and shared controls in the frontend define the rules. This page explains how to use them.
+Aurral's interface puts the music first. Artwork supplies the color. Everything else is black, white, and gray, set in one typeface on a short type scale. This page is the reference for how Aurral looks and the tokens and controls that keep it consistent.
+
+## Principles
+
+- **Artwork is the color.** The interface is grayscale. Brand green is a rare signal, never a theme.
+- **Weight and size carry hierarchy.** Do not add a divider, box, or label to separate things that spacing and type can separate.
+- **Remove before adding.** Every border, badge, icon, and line of copy costs attention.
+- **One way to do each thing.** A page title, a section heading, a play button, and an empty state look the same on every page.
+- **Every action answers itself.** After a click, the target changes, a destination opens, progress starts, or a toast names the result.
+
+## Type
+
+Aurral uses Inter Variable with its optical size axis, loaded from `@fontsource-variable/inter`. Use `var(--font-sans)` for text and `var(--font-mono)` for paths, versions, and other machine values.
+
+Every `font-size` uses a `--aurral-font-*` token:
+
+| Token                   | Size              | Use                                 |
+| ----------------------- | ----------------- | ----------------------------------- |
+| `--aurral-font-display` | 40 to 88px, fluid | Artist name over the hero           |
+| `--aurral-font-title`   | 28 to 36px, fluid | Page and collection titles          |
+| `--aurral-font-xl`      | 20px              | Section headings                    |
+| `--aurral-font-lg`      | 18px              | Settings groups, empty state titles |
+| `--aurral-font-md`      | 16px              | Mobile tabs, prominent rows         |
+| `--aurral-font-base`    | 14px              | Body, buttons, track titles         |
+| `--aurral-font-sm`      | 13px              | Secondary text, table cells, links  |
+| `--aurral-font-xs`      | 12px              | Metadata under a title              |
+| `--aurral-font-2xs`     | 11px              | Table headings, counts              |
+
+Use weights 400, 500, 600, and 700 only. Titles and section headings use 700. Buttons, tabs, and row titles that need emphasis use 600.
+
+Titles tighten with `--aurral-tracking-title`, and the display size uses `--aurral-tracking-display`. All other text uses normal tracking. Write labels in sentence case. Do not add uppercase labels, wide tracking, or a small eyebrow above a title.
+
+## Layout and hierarchy
+
+Every page starts with one `.page-title` in the top left, at the page gutter. Detail pages use `CollectionHeader`. Put the page's actions beside or under the title, never in a bar with a border.
+
+Sections use one heading style: `--aurral-font-xl`, weight 700, title tracking. A section links to its full list with a muted "Show all" text link on the right, using `.section-show-all`. Do not draw a line under a title or between sections.
+
+Track rows have no dividers. On devices with a mouse, the track number turns into a play button on hover, and row and card menus appear on hover or focus. Touch screens show them all the time. Keep anything that reports progress, such as a download spinner, visible. Do not repeat a status that every item in a section shares, such as the library check in Recently added.
+
+## Color and surfaces
+
+The dark theme uses a true black page. The sidebar and top bar sit one step lighter, and everything else steps up in small, neutral increments:
+
+| Token                       | Dark value              | Use                               |
+| --------------------------- | ----------------------- | --------------------------------- |
+| `--aurral-surface`          | `#000`                  | Page                              |
+| `--aurral-chrome`           | `#050505`               | Sidebar, top bar, player          |
+| `--aurral-surface-raised`   | `#0e0e0e`               | Inputs, cards that need a surface |
+| `--aurral-surface-popover`  | `#0e0e0e`               | Opaque popovers and sheets        |
+| `--aurral-surface-glass`    | popover at 84%, blurred | Menus, suggestions, toasts        |
+| `--aurral-surface-modal`    | black at 80%            | Modals                            |
+| `--aurral-surface-hover`    | `#1b1b1b`               | Hover on rows and controls        |
+| `--aurral-surface-selected` | `#1e1e1e`               | The active row                    |
+
+Text uses `--aurral-text` (white), `--aurral-text-muted` for secondary text, and `--aurral-text-subtle` for metadata and placeholders. `--aurral-accent` is white in the dark theme. Immersive mode tints it from artwork, so components use the token and never pick a color.
+
+## Shape
+
+| Token                   | Value | Use                                    |
+| ----------------------- | ----- | -------------------------------------- |
+| `--aurral-radius-xs`    | 4px   | Small chips, key hints, progress bars  |
+| `--aurral-radius-sm`    | 6px   | Buttons, inputs, rows, menu items      |
+| `--aurral-radius`       | 8px   | Artwork, cards, menus, search          |
+| `--aurral-radius-lg`    | 12px  | Modals and sheets                      |
+| `--aurral-radius-round` | pill  | Play buttons, round toggles, tag pills |
+
+Artist images are circles. Album and playlist artwork uses `--aurral-radius`.
+
+## Buttons
+
+- **Play** is round and filled with `--aurral-accent`. It is the only round button, and each view has at most one.
+- **Primary** (`.btn-primary`) inverts the page: white fill and black text in the dark theme. Use it for the one action that moves the user forward.
+- **Secondary** (`.btn-secondary`) is for alternatives and retries.
+- **Icon** buttons have no border or fill until hover. Give each one a label through `TooltipButton`.
+
+## Icons
+
+Icons come from `frontend/src/components/icons.tsx`, which wraps Untitled UI icons at a 1.5 stroke. Play and Pause are filled. Size icons with the `--aurral-icon-*` tokens: `xs` 14px inline with small text, `sm` 16px in buttons and rows, the base 20px in navigation, `lg` 24px for artwork fallbacks, and `xl` 32px in empty and error states.
+
+## Empty, error, and loading states
+
+Use `.search-empty-panel` for empty and error states: an icon in `.search-empty-panel__icon`, a title, one short message, and at most one action. Errors use `AlertCircle`, `role="alert"`, a title that starts with "Couldn't load", and a "Try again" button when retrying can help.
+
+Loading states use skeletons shaped like the ready state. Use `DotLoader` only where content cannot be predicted.
+
+## Motion
+
+Use the `--aurral-duration-*` and `--aurral-ease-*` tokens. Nothing loops forever. The two exceptions are the now-playing equalizer and `DotLoader`. Both animate only transform or opacity and stop when the user prefers reduced motion. Do not add pulses, shimmers, or spinners that keep running.
 
 ## Run the UI checks
 
 Run `pnpm run lint:ui` from the repository root to check stylesheets and JSX. Run `pnpm run check` to include the UI checks with formatting and the other lint rules.
 
-CI runs `pnpm run check`, so it reports UI violations with the other checks.
+CI runs `pnpm run check`, so it reports UI violations with the other checks. The stylesheet checker enforces the type scale, weights, tracking, font families, radius tokens, and the looping animation exceptions listed above.
 
 ## Use Aurral theme tokens
 
@@ -23,9 +111,9 @@ Name a new token for its role. Use `light-dark()` when the role needs different 
 
 Artwork can use colors extracted from the artwork. Keep those values tied to artwork content. Do not use artwork colors for Aurral controls or page chrome. The checker allows the fallback used by the discover playlist artwork treatment.
 
-The stylesheet owns Aurral's own light and dark colors. Other themes are stored as a few input colors, and `frontend/src/utils/theme.ts` generates the color roles from them with contrast targets and writes them over the stylesheet values. A token outside those roles keeps Aurral's value in every theme, so derive a new color token from a role token when it should follow the theme. The opt-in **Immersive mode** setting is the one exception to the artwork rule above. It feeds the cover color through the same contrast checks, so components should not apply artwork colors to controls themselves.
+The stylesheet owns Aurral's own light and dark colors. Other themes are stored as a few input colors, and `frontend/src/utils/theme.ts` generates the color roles from them with contrast targets and writes them over the stylesheet values. A token outside those roles keeps Aurral's value in every theme, so derive a new color token from a role token when it should follow the theme. The **Immersive mode** setting, on by default, is the one exception to the artwork rule above. It feeds the cover color through the same contrast checks, so components should not apply artwork colors to controls themselves.
 
-Immersive mode also controls artwork washes in detail pages and the player, plus decorative artwork backdrops in search. Use `useArtworkWash` for extracted background colors so they follow this preference. The theme document keeps the stored `matchArtwork` field so existing account and browser preferences carry over.
+Immersive mode also controls artwork washes at the top of Discover, Recommended, Trending, and detail pages and in the player, plus decorative artwork backdrops in search. Use `useArtworkWash` for extracted background colors so they follow this preference. To tint a card's hover from its artwork, spread `artworkHoverTint` on the card and read `--card-tint-surface` and `--card-tint-text` in its CSS with a neutral fallback. The theme document keeps the stored `matchArtwork` field so existing account and browser preferences carry over.
 
 ## Reuse shared controls
 
@@ -37,7 +125,7 @@ Use `.btn` with the existing variant classes for standard actions:
 </button>
 ```
 
-Use `TooltipButton` for icon-only actions. Give it a `label`, and include `.btn` with the button variants:
+Use `TooltipButton` for icon-only actions. Its tooltip waits one second on hover, so moving the pointer across a toolbar stays quiet. Keyboard focus shows it right away. Give it a `label`, and include `.btn` with the button variants:
 
 ```jsx
 <TooltipButton label="Refresh" className="btn btn-ghost btn-icon" onClick={refresh}>
@@ -79,12 +167,6 @@ function ProfilePage({ sections }) {
   );
 }
 ```
-
-## Add a narrow exception
-
-Add an entry to `frontend/lint-rules/shared-control-exceptions.json` only when an existing control must keep a different pattern. Each entry needs a unique `id`, a source `file`, one exact class, class expression, or role, and a reason.
-
-The checker matches exceptions by both file and selector. It does not support file or directory-wide ignores. Add a rule test for each exception.
 
 ## Review the visual result
 

@@ -1,12 +1,30 @@
 import { Pause, Play, Shuffle } from "./icons";
 import type { ReactNode } from "react";
+import { skipToken, useQuery } from "@tanstack/react-query";
 import { useArtworkWash } from "../utils/imageColors";
 import TooltipButton from "./TooltipButton";
 import { useSharedArtworkStyle } from "../navigation/viewTransitions.ts";
+import { getArtistCover } from "../utils/api/endpoints/artists.ts";
+import { queryKeys } from "../queryClient.ts";
 
 export function useCollectionTint(src: string | null | undefined) {
   const wash = useArtworkWash(src || null);
   return wash ? `light-dark(${wash.light}, ${wash.dark})` : null;
+}
+
+export function useArtistTint(
+  image: string | null | undefined,
+  mbid: string | null | undefined,
+  name: string | null | undefined,
+) {
+  const lookupMbid = image ? null : mbid;
+  const { data } = useQuery({
+    queryKey: queryKeys.artistCover(lookupMbid),
+    queryFn: lookupMbid ? () => getArtistCover(lookupMbid, name) : skipToken,
+    staleTime: Infinity,
+  });
+  const covers = data?.images ?? [];
+  return useCollectionTint(image || (covers.find((cover) => cover.front) ?? covers[0])?.image);
 }
 
 export function CollectionPage({
@@ -57,11 +75,7 @@ export function CollectionPlayButtons({
         disabled={disabled}
         aria-label={`${isPlaying ? "Pause" : "Play"} ${label}`}
       >
-        {isPlaying ? (
-          <Pause aria-hidden="true" fill="currentColor" />
-        ) : (
-          <Play aria-hidden="true" fill="currentColor" />
-        )}
+        {isPlaying ? <Pause aria-hidden="true" /> : <Play aria-hidden="true" />}
         {isPlaying ? "Pause" : "Play"}
       </button>
       {onShuffle ? (
@@ -81,7 +95,6 @@ export function CollectionPlayButtons({
 
 interface CollectionHeaderProps {
   cover: ReactNode;
-  kicker?: ReactNode;
   title: ReactNode;
   subtitle?: ReactNode;
   meta?: ReactNode;
@@ -93,7 +106,6 @@ interface CollectionHeaderProps {
 
 export function CollectionHeader({
   cover,
-  kicker,
   title,
   subtitle,
   meta,
@@ -115,7 +127,6 @@ export function CollectionHeader({
         {cover}
       </div>
       <div className="native-library-detail__body">
-        {kicker ? <p className="native-library-kicker">{kicker}</p> : null}
         <Title className="collection-header__title">{title}</Title>
         {typeof subtitle === "string" ? (
           <p className="collection-header__description">{subtitle}</p>
