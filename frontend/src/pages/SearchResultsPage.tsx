@@ -37,6 +37,7 @@ import { useToast } from "../contexts/ToastContext";
 import { allReleaseTypes } from "./ArtistDetails/constants";
 import { readReleaseListViewMode, writeReleaseListViewMode } from "./ArtistDetails/utils";
 import { useArtistTasteFeedback } from "../hooks/useArtistTasteFeedback";
+import { useBlockedGenres } from "../hooks/useBlockedGenres";
 import type { ArtistFeedbackAction, ArtistFeedbackSource } from "../utils/artistTaste";
 import { queryKeys } from "../queryClient.ts";
 import { useStaticPlaylists } from "../hooks/useStaticPlaylists";
@@ -67,7 +68,16 @@ import {
 import { Navigate, useSearchParams } from "react-router";
 import { RECOMMENDED_PATH, recommendedListPath } from "../navigation/recommendedPath.ts";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
-import { Grid3X3, LayoutGrid, List, Music, Search, SlidersHorizontal } from "../components/icons";
+import {
+  Ban,
+  Grid3X3,
+  LayoutGrid,
+  List,
+  MoreVertical,
+  Music,
+  Search,
+  SlidersHorizontal,
+} from "../components/icons";
 import TooltipButton from "../components/TooltipButton";
 import Tooltip from "../components/Tooltip";
 
@@ -166,6 +176,10 @@ function SearchResults() {
   useDocumentTitle(pageTitle);
   const albumSort = searchParams.get("sort") || DEFAULT_ALBUM_SORT;
   const { lookup: artistFeedbackLookup, submitFeedback } = useArtistTasteFeedback();
+  const { isGenreBlocked, setGenreBlocked, pendingGenre } = useBlockedGenres();
+  const tagName = isTagSearch ? trimmedQuery.replace(/^#/, "").trim() : "";
+  const tagBlocked = tagName ? isGenreBlocked(tagName) : false;
+  const [genreMenuOpen, setGenreMenuOpen] = useState(false);
   const canAddAlbum = hasPermission("addAlbum");
   const updateAlbumSort = useCallback(
     (nextSort: string) => {
@@ -1131,6 +1145,56 @@ function SearchResults() {
       <header className="search-page__header">
         <div className="search-page__title-row">
           <h1 className="search-page__title">{pageTitle}</h1>
+          {tagBlocked ? (
+            <span className="search-page__genre-blocked">
+              <Ban aria-hidden="true" />
+              Blocked
+            </span>
+          ) : null}
+          {tagName ? (
+            <div className="artist-relative search-page__genre-menu">
+              <TooltipButton
+                type="button"
+                onClick={() => setGenreMenuOpen((open) => !open)}
+                className="btn btn-surface btn-icon-square"
+                aria-label="More genre actions"
+                title="More genre actions"
+                aria-expanded={genreMenuOpen}
+              >
+                {pendingGenre === tagName ? (
+                  <DotLoader size="sm" label={null} />
+                ) : (
+                  <MoreVertical className="artist-icon-md" />
+                )}
+              </TooltipButton>
+              {genreMenuOpen ? (
+                <>
+                  <button
+                    type="button"
+                    className="artist-backdrop-button"
+                    onClick={() => setGenreMenuOpen(false)}
+                    aria-label="Close genre actions"
+                  />
+                  <div className="artist-dropdown artist-dropdown--right">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setGenreMenuOpen(false);
+                        void setGenreBlocked(tagName, !tagBlocked);
+                      }}
+                      disabled={pendingGenre === tagName}
+                      className="artist-menu-item artist-menu-item--danger"
+                    >
+                      <span className="artist-menu-item__main">
+                        <Ban className="artist-icon-sm" />
+                        {tagBlocked ? "Unblock genre" : "Block genre"}
+                      </span>
+                    </button>
+                  </div>
+                </>
+              ) : null}
+            </div>
+          ) : null}
         </div>
 
         {pageSubtitle && (
