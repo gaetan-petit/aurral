@@ -34,6 +34,7 @@ import { PLAYER_SHORTCUTS, usePlayerShortcuts } from "../hooks/usePlayerShortcut
 import { useNowPlayingTitle } from "../hooks/useDocumentTitle";
 import { useLibraryShareAction, useShareAction } from "../hooks/useShareAction.ts";
 import { useCollectionTint } from "./CollectionHeader";
+import { albumPath } from "../../../lib/albumPath.ts";
 import ArtworkImage from "./ArtworkImage";
 
 const SHEET_EXIT_MS = 260;
@@ -176,7 +177,10 @@ function GlobalPlayerBar() {
   const artistLabel = currentTrack.artist || "";
   const albumLabel = currentTrack.album || "";
   const artistPath = artistMbid ? `/artist/${artistMbid}` : "";
-  const albumPath = artistMbid && albumMbid ? `/artist/${artistMbid}/release/${albumMbid}` : "";
+  const libraryAlbumId = String(currentTrack.libraryAlbumId ?? "").trim();
+  const albumRef = libraryAlbumId || albumMbid;
+  const albumLink = albumRef ? albumPath(albumRef) : "";
+  const albumLinkState = { artistMbid: artistMbid || null, libraryAlbumId: libraryAlbumId || null };
   const canShareTrack = Boolean(currentTrack.title && artistLabel);
   const shareTrack = () =>
     (currentTrack.libraryTrackId ? shareLibrary : sharePlain)(
@@ -193,10 +197,10 @@ function GlobalPlayerBar() {
       },
       currentTrack.title!,
     );
-  const metaLink = (label: string, path: string) =>
+  const metaLink = (label: string, path: string, state?: unknown) =>
     label ? (
       path ? (
-        <Link to={path} className="global-player__link">
+        <Link to={path} state={state} className="global-player__link">
           {label}
         </Link>
       ) : (
@@ -371,7 +375,7 @@ function GlobalPlayerBar() {
                       <p className="now-playing__subtitle">
                         {metaLink(artistLabel, artistPath)}
                         {artistLabel && albumLabel ? " · " : null}
-                        {metaLink(albumLabel, albumPath)}
+                        {metaLink(albumLabel, albumLink, albumLinkState)}
                       </p>
                     ) : null}
                     {playbackError ? (
@@ -456,7 +460,7 @@ function GlobalPlayerBar() {
               <span className="global-player__subtitle">
                 {metaLink(artistLabel, artistPath)}
                 {artistLabel && albumLabel ? " · " : null}
-                {metaLink(albumLabel, albumPath)}
+                {metaLink(albumLabel, albumLink, albumLinkState)}
               </span>
             ) : null}
             {playbackError ? (

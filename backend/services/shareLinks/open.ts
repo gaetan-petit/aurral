@@ -2,6 +2,7 @@ import { db } from "../../config/db-sqlite.ts";
 import type { LibraryAlbumsRow, LibraryArtistsRow } from "../../db/rows.ts";
 import { findSharedTrack, type ShareManifest } from "../../../lib/shareManifest.ts";
 import { getLibraryForTrackMatches } from "../libraryQueryService.ts";
+import { albumPath } from "../../../lib/albumPath.ts";
 
 export function shareDestination(manifest: ShareManifest) {
   const artist = db
@@ -32,9 +33,8 @@ export function shareDestination(manifest: ShareManifest) {
         manifest.albumMbid,
         manifest.albumMbid,
       );
-    if (album) return `/library/album/${album.id}`;
-    if (manifest.artistMbid && manifest.albumMbid)
-      return `/artist/${manifest.artistMbid}/release/${manifest.albumMbid}`;
+    if (album) return albumPath(album.id);
+    if (manifest.albumMbid) return albumPath(manifest.albumMbid);
   }
   if (manifest.kind === "track") {
     const requested = manifest.tracks[0] || {
@@ -72,7 +72,7 @@ export function shareDestination(manifest: ShareManifest) {
       }),
     );
     const track = findSharedTrack(candidates, requested);
-    if (track) return `/library/album/${track.albumId}?track=${track.id}`;
+    if (track) return albumPath(track.albumId, { track: track.id });
   }
   return `/search?q=${encodeURIComponent(
     [manifest.title, manifest.artistName]

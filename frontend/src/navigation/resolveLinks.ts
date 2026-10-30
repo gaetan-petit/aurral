@@ -9,6 +9,7 @@ import {
   lookupAlbumsInLibraryBatch,
   lookupArtistInLibrary,
 } from "../utils/api/endpoints/library.ts";
+import { albumPath } from "../../../lib/albumPath.ts";
 import {
   findLibraryAlbumByName,
   findLibraryArtistByName,
@@ -63,8 +64,9 @@ const releaseTarget = (
   artistName: string,
   albumName: string,
 ) => ({
-  to: `/artist/${artistMbid}/release/${albumMbid}`,
+  to: albumPath(albumMbid),
   state: {
+    artistMbid,
     artistName,
     focusReleaseGroupMbid: albumMbid,
     focusReleaseGroup: { id: albumMbid, title: albumName || "" },
@@ -147,7 +149,7 @@ async function resolveLibraryAlbum(params: URLSearchParams, signal: AbortSignal 
     );
   }
   if (!canonicalId) throw notFound(`Couldn't find ${name || "this album"} in your library`);
-  return { to: `/library/album/${encodeURIComponent(canonicalId)}` };
+  return { to: albumPath(canonicalId) };
 }
 
 export function resolveLinkTarget(

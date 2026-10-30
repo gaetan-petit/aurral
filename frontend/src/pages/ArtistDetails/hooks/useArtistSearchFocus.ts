@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { albumPath } from "../../../../../lib/albumPath.ts";
 
 interface ArtistSearchFocusState {
   focusReleaseGroupMbid?: string | null;
@@ -29,9 +30,10 @@ export function useArtistSearchFocus({ navigate, mbid, locationState }: ArtistSe
     if (appliedRef.current || !focusReleaseGroupMbid || !mbid) return;
 
     appliedRef.current = true;
-    navigate(`/artist/${mbid}/release/${focusReleaseGroupMbid}`, {
+    navigate(albumPath(focusReleaseGroupMbid, { track: focusTrackMbid }), {
       replace: true,
       state: {
+        artistMbid: mbid,
         artistName: locationState?.artistName,
         inLibrary: locationState?.inLibrary,
         libraryArtist: locationState?.libraryArtist,

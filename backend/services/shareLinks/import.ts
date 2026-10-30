@@ -26,6 +26,7 @@ import { userOps } from "../../db/helpers/index.ts";
 import { loadRemoteShare } from "./remote.ts";
 import { saveShareDownload, getShareDownload } from "./downloadStore.ts";
 import { findQueuedLibraryTrackJob } from "../libraryTrackRequests.ts";
+import { albumPath } from "../../../lib/albumPath.ts";
 
 export function toImportTrack(track: SharedTrack) {
   return { ...track, trackName: track.title, albumName: track.albumTitle };
@@ -168,12 +169,12 @@ export async function importShare(payload: Record<string, unknown>) {
         releaseGroupMbid: manifest.albumMbid,
       });
       retainUnmonitored("album", album.id);
-      to = `/library/album/${album.id}`;
+      to = albumPath(album.id);
     }
     return manifest.tracks.map((track, index) => {
       if (manifest.kind !== "playlist") {
         const saved = saveTrack(track);
-        if (manifest.kind === "track") to = `/library/album/${saved.album.id}`;
+        if (manifest.kind === "track") to = albumPath(saved.album.id);
       }
       const input = toImportTrack(track);
       if (manifest.kind !== "playlist" && (!includeFiles || localFiles[index])) return input;

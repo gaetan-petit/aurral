@@ -110,3 +110,29 @@ test("broad search keeps stable ordering, page boundaries, and playable source f
     }
   }
 });
+
+test("an album track page carries the album's provider id and monitored state", () => {
+  const artist = store.upsertLibraryArtist({
+    identityKey: "summary:artist",
+    name: "Summary Artist",
+    metadata: { id: 41, monitored: true },
+  });
+  const album = store.upsertLibraryAlbum({
+    identityKey: "summary:album",
+    artistId: artist.id,
+    title: "Summary Album",
+    metadata: { id: 512, monitored: true, monitor: "all" },
+  });
+  const track = store.upsertLibraryTrack({ identityKey: "summary:track", title: "Summary Track" });
+  store.linkLibraryAlbumTrack({ albumId: album.id, trackId: track.id });
+
+  const page = getLibraryPage({ kind: "tracks", albumId: album.id, availableOnly: false });
+  const [summaryAlbum] = page.albums;
+  assert.equal(summaryAlbum.canonicalId, String(album.id));
+  assert.equal(summaryAlbum.providerId, 512);
+  assert.equal(summaryAlbum.monitored, true);
+  assert.equal(summaryAlbum.monitorOption, "all");
+  const [summaryArtist] = page.artists;
+  assert.equal("providerId" in summaryArtist && summaryArtist.providerId, 41);
+  assert.equal("monitored" in summaryArtist && summaryArtist.monitored, true);
+});

@@ -3002,14 +3002,21 @@ function getAlbumTrackSummary(albumId: string | number, sourceFilter: string | n
   const sources = parseSources(row.sources);
   const artistManagement = getManagedByMap("artist").get(row.artist_id) || null;
   const albumManagement = getManagedByMap("album").get(row.album_id) || null;
+  const artistMetadata = readLibraryMetadata(row.artist_metadata_json);
+  const albumMetadata = readLibraryMetadata(row.album_metadata_json);
+  const albumCredits = albumCreditsStmt.all(row.album_id).map((credit) => credit.artist_mbid);
   return {
     artist: {
       id: row.artist_id,
+      canonicalId: String(row.artist_id),
       identityKey: row.artist_identity_key,
       mbid: row.artist_mbid,
       name: row.artist_name,
       sortName: row.artist_sort_name,
-      metadata: readLibraryMetadata(row.artist_metadata_json),
+      metadata: artistMetadata,
+      providerId: artistMetadata?.id ?? null,
+      monitored: artistMetadata?.monitored === true,
+      monitorOption: artistMetadata?.monitor || artistMetadata?.addOptions?.monitor || "none",
       albumIds: [row.album_id],
       managedBy: artistManagement?.managedBy ?? null,
       monitorMode: artistManagement?.monitorMode ?? null,
@@ -3018,6 +3025,7 @@ function getAlbumTrackSummary(albumId: string | number, sourceFilter: string | n
     },
     album: {
       id: row.album_id,
+      canonicalId: String(row.album_id),
       identityKey: row.album_identity_key,
       mbid: row.album_mbid,
       releaseGroupMbid: row.album_release_group_mbid,
@@ -3026,7 +3034,11 @@ function getAlbumTrackSummary(albumId: string | number, sourceFilter: string | n
       albumArtist: row.album_artist,
       releaseDate: row.album_release_date,
       createdAt: row.album_created_at,
-      metadata: readLibraryMetadata(row.album_metadata_json),
+      metadata: albumMetadata,
+      providerId: albumMetadata?.id ?? null,
+      monitored: albumMetadata?.monitored === true,
+      monitorOption: albumMetadata?.monitor || albumMetadata?.addOptions?.monitor || "none",
+      ...(albumCredits.length ? { creditedArtistMbids: albumCredits } : {}),
       trackIds: [],
       managedBy: albumManagement?.managedBy ?? null,
       monitorMode: albumManagement?.monitorMode ?? null,

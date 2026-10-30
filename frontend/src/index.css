@@ -9325,6 +9325,14 @@ button.native-library-card__artist:focus-visible {
   height: 0.85rem;
 }
 
+.native-library-track__owned {
+  display: inline-flex;
+  width: 1.5rem;
+  height: 1.5rem;
+  align-items: center;
+  justify-content: center;
+}
+
 .native-library-track__favorite {
   opacity: 0;
 }
@@ -9569,6 +9577,17 @@ button.native-library-genre-row:focus-visible {
   );
 }
 
+.collection-header__title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+}
+
+.collection-header__title-row .collection-header__title {
+  min-width: 0;
+}
+
 .collection-header__subtitle {
   max-width: 44rem;
 }
@@ -9778,6 +9797,10 @@ button.native-library-genre-row:focus-visible {
   margin: 0.35rem 0 0;
   color: var(--aurral-text-muted);
   font-size: var(--aurral-font-sm);
+}
+
+.native-library-detail__meta-item {
+  white-space: nowrap;
 }
 
 .native-library-detail__manager {

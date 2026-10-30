@@ -383,7 +383,7 @@ export const formatAlbumDuration = (durationMs: number) => {
   return `${minutes} min`;
 };
 
-const getReleaseTypeLabel = (release: ReleaseGroup | null | undefined) => {
+export const getReleaseTypeLabel = (release: ReleaseGroup | null | undefined) => {
   const types = [
     release?.["primary-type"],
     ...(Array.isArray(release?.["secondary-types"]) ? release["secondary-types"] : []),
@@ -484,7 +484,10 @@ export const resolveReleaseLibraryDisplay = (
   if (libraryInfo.trackListComplete === false || percent > 0) {
     return withAction({
       kind: "incomplete",
-      label: libraryInfo.trackListComplete === false ? "Incomplete" : `Incomplete · ${percent}%`,
+      label:
+        libraryInfo.trackListComplete === false
+          ? "Incomplete"
+          : `Incomplete · ${Math.max(1, Math.floor(percent))}%`,
       isComplete: false,
       isInLibrary: true,
     });

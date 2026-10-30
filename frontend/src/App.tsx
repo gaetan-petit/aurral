@@ -32,6 +32,7 @@ import { SkeletonPageTitle } from "./components/Skeletons";
 import { useDiscoveryStatus } from "./hooks/useDiscoveryStatus";
 import { buildActivityPath, DEFAULT_ACTIVITY_VIEW } from "./navigation/activityNavConfig";
 import { routeModules } from "./navigation/routeModules.ts";
+import { LegacyLibraryAlbumRedirect, LegacyReleaseRedirect } from "./navigation/albumRoute.tsx";
 import { getBootstrapPollIntervalMs } from "./utils/requestScheduling.ts";
 import { useLanternPreview, useWrappedSeason } from "./hooks/useWrapped.ts";
 
@@ -51,7 +52,7 @@ const WrappedAnnouncement = lazy(() => import("./components/WrappedAnnouncement.
 const BlocklistPage = lazy(routeModules.blocklist);
 const ArtistDetailsPage = lazy(routeModules.artist);
 const ArtistReleaseListPage = lazy(routeModules.artistReleases);
-const ReleasePage = lazy(routeModules.release);
+const AlbumPage = lazy(routeModules.album);
 const ActivityPage = lazy(routeModules.activity);
 const PlaylistsPage = lazy(routeModules.playlists);
 const PlaylistDetailPage = lazy(routeModules.playlist);
@@ -311,7 +312,8 @@ const appRoutes = createRoutesFromElements(
           </PermissionRoute>
         }
       />
-      <Route path="/library/album/:albumId" element={<LibraryPage />} />
+      <Route path="/album/:ref" element={<AlbumPage />} />
+      <Route path="/library/album/:albumId" element={<LegacyLibraryAlbumRedirect />} />
       <Route path="/library/artist/:artistId" element={<LibraryPage />} />
       <Route path="/library/:section?" element={<LibraryPage />} />
       <Route
@@ -341,7 +343,7 @@ const appRoutes = createRoutesFromElements(
       <Route path="/activity" element={<ActivityRootRedirect />} />
       <Route path="/activity/:view" element={<ActivityPage />} />
       <Route path="/artist/:mbid/albums" element={<ArtistReleaseListPage mode="releases" />} />
-      <Route path="/artist/:mbid/release/:releaseMbid" element={<ReleasePage />} />
+      <Route path="/artist/:mbid/release/:releaseMbid" element={<LegacyReleaseRedirect />} />
       <Route path="/artist/:mbid/appears-on" element={<ArtistReleaseListPage mode="appearsOn" />} />
       <Route path="/artist/:mbid" element={<ArtistDetailsPage />} />
       <Route path="/wrapped" element={<WrappedPage />} />
