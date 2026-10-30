@@ -1,6 +1,7 @@
-import { db } from "../../config/db-sqlite.ts";
+import * as v from "valibot";
+import { db, dbHelpers } from "../../config/db-sqlite.ts";
 import { downloadTracker, type DownloadJob, type JobFields } from "./downloadTracker.ts";
-import type { HonkerPayload } from "../honkerDb.ts";
+import { parseHonkerPayload } from "../honkerDb.ts";
 import type { HonkerLiveRow, PlaylistDownloadJobsRow, SettingsRow } from "../../db/rows.ts";
 import { flowPlaylistConfig } from "../playlists/flowPlaylistConfig.ts";
 import {
@@ -26,8 +27,9 @@ const ownerStmt = db.prepare<
 );
 const pruneSettledTransfersStmt = db.prepare(`
   DELETE FROM settings WHERE key LIKE 'downloadJobTransfers:%' AND NOT EXISTS (
-    SELECT 1 FROM json_each(settings.value) AS transfer
-    JOIN playlist_download_jobs AS job ON job.id = json_extract(transfer.value, '$.toJobId')
+    SELECT 1 FROM json_each(CASE WHEN json_valid(settings.value) THEN settings.value ELSE '[]' END) AS transfer
+    JOIN playlist_download_jobs AS job
+      ON job.id = CASE transfer.type WHEN 'object' THEN json_extract(transfer.value, '$.toJobId') END
     WHERE job.status IN ('pending', 'downloading', 'blocked'))
 `);
 
@@ -39,37 +41,26 @@ export type OwnedPayload = {
   albumGroupJobIds?: unknown;
 };
 
-type DownloadTransfer = {
-  fromJobId: string;
-  fromPlaylistId: string;
-  fromGeneration: number;
-  fromAttemptId: string | null;
-  toJobId: string;
-  toPlaylistId: string;
-  toGeneration: number;
-  toAttemptId: string | null;
-  destination: string;
-  track: Pick<
-    DownloadJob,
-    | "artistName"
-    | "trackName"
-    | "albumName"
-    | "artistMbid"
-    | "albumMbid"
-    | "trackMbid"
-    | "releaseYear"
-    | "durationMs"
-    | "trackNumber"
-    | "discNumber"
-    | "albumTrackCount"
-    | "albumTrackTitles"
-    | "artistAliases"
-  >;
-};
+const transfersSchema = v.array(
+  v.looseObject({
+    fromJobId: v.string(),
+    fromPlaylistId: v.string(),
+    fromGeneration: v.number(),
+    fromAttemptId: v.nullable(v.string()),
+    toJobId: v.string(),
+    toPlaylistId: v.string(),
+    toGeneration: v.number(),
+    toAttemptId: v.nullable(v.string()),
+    destination: v.string(),
+    track: v.looseObject({}),
+  }),
+);
 
-function readTransfers(jobId: string): DownloadTransfer[] {
-  const row = settingStmt.get(`downloadJobTransfers:${jobId}`);
-  return row ? JSON.parse(row.value) : [];
+type DownloadTransfer = v.InferOutput<typeof transfersSchema>[number];
+
+function readTransfers(jobId: string) {
+  const key = `downloadJobTransfers:${jobId}`;
+  return dbHelpers.readJSON(transfersSchema, settingStmt.get(key)?.value, key) ?? [];
 }
 
 function currentJob(jobId: string) {
@@ -191,8 +182,8 @@ function recordTransfer(
       "SELECT id, payload FROM _honker_live WHERE queue = 'slskd-pipeline'",
     )
     .all()) {
-    const payload: HonkerPayload = JSON.parse(row.payload);
-    if (payload.jobId !== from.id) continue;
+    const payload = parseHonkerPayload(row.payload);
+    if (payload?.jobId !== from.id) continue;
     if (
       payload.playlistId !== from.playlistId ||
       Number(payload.playlistGeneration || 0) !== from.playlistGeneration ||

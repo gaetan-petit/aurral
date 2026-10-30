@@ -1,4 +1,5 @@
-import { db } from "../../config/db-sqlite.ts";
+import * as v from "valibot";
+import { db, dbHelpers } from "../../config/db-sqlite.ts";
 import { randomUUID } from "node:crypto";
 import type {
   PlaylistDownloadJobsRow,
@@ -14,9 +15,13 @@ const saveAttemptStmt = db.prepare<[string, string]>(
   "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
 );
 
-export function getActiveDownloadAttemptId(jobId: string): string | null {
-  const row = attemptStmt.get(`activeDownloadAttempt:${jobId}`);
-  return row ? JSON.parse(row.value) : null;
+const UNREADABLE_ATTEMPT = "unreadable-download-attempt";
+
+export function getActiveDownloadAttemptId(jobId: string) {
+  const key = `activeDownloadAttempt:${jobId}`;
+  const value = attemptStmt.get(key)?.value;
+  if (value === undefined || value === "null") return null;
+  return dbHelpers.readJSON(v.string(), value, key) ?? UNREADABLE_ATTEMPT;
 }
 
 export function beginDownloadAttempt(jobId: string) {

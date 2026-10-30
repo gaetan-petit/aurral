@@ -82,6 +82,33 @@ test("ownership transfer preserves a provider attempt and rejects it after expli
   );
 });
 
+test("a saved handoff Aurral can't read never redirects a queued download", () => {
+  const source = flowPlaylistConfig.createStaticPlaylist({ name: "Handoff Source" });
+  const target = flowPlaylistConfig.createStaticPlaylist({ name: "Handoff Target" });
+  const jobId = createTrackedJob(
+    downloadTracker,
+    { artistName: "Artist", trackName: "Track" },
+    source.id,
+  );
+  assert.ok(jobId != null);
+  const payload = {
+    jobId,
+    playlistId: source.id,
+    playlistGeneration: 0,
+    downloadAttemptId: cancellation.beginDownloadAttempt(jobId),
+  };
+  db.transaction(() => ownership.transferDownloadOwnershipInTransaction(jobId, target.id))();
+  downloadTracker.reconcileCommittedJobs();
+  db.prepare(
+    "UPDATE settings SET value = json_set(value, '$[0].destination', 5) WHERE key = ?",
+  ).run(`downloadJobTransfers:${jobId}`);
+
+  const resolved = ownership.resolveTransferredDownloadPayload(payload);
+
+  assert.equal(resolved.playlistId, source.id);
+  assert.equal(cancellation.isPipelinePayloadActive(resolved), false);
+});
+
 test("rolled-back transfer leaves the continuing process and queued payload unchanged", () => {
   const source = flowPlaylistConfig.createStaticPlaylist({ name: "Rollback source" });
   const target = flowPlaylistConfig.createStaticPlaylist({ name: "Rollback target" });
@@ -212,6 +239,58 @@ test("completed and removed jobs release their active attempt records", () => {
   cancellation.beginDownloadAttempt(pendingId);
   downloadTracker.removeJob(pendingId);
   assert.equal(cancellation.getActiveDownloadAttemptId(pendingId), null);
+});
+
+test("a saved attempt Aurral can't read lets no queued download step through", () => {
+  const jobId = createTrackedJob(
+    downloadTracker,
+    { artistName: "Artist", trackName: "Unread attempt" },
+    "attempt-check",
+  );
+  assert.ok(jobId != null);
+  db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, '123')").run(
+    `activeDownloadAttempt:${jobId}`,
+  );
+  const owner: {
+    jobId: string;
+    playlistId: string;
+    playlistGeneration: number;
+    downloadAttemptId?: null;
+  } = { jobId, playlistId: "attempt-check", playlistGeneration: 0 };
+
+  assert.equal(cancellation.isPipelinePayloadActive({ ...owner, downloadAttemptId: null }), false);
+  for (const payload of [owner, { ...owner, downloadAttemptId: null }]) {
+    assert.equal(
+      ownership.resolveTransferredDownloadPayload(payload).downloadAttemptId,
+      "unmatched-download-attempt",
+    );
+  }
+});
+
+test("a saved handoff list Aurral can't read never blocks another handoff", () => {
+  const source = flowPlaylistConfig.createStaticPlaylist({ name: "Unread list source" });
+  const target = flowPlaylistConfig.createStaticPlaylist({ name: "Unread list target" });
+  const jobId = createTrackedJob(
+    downloadTracker,
+    { artistName: "Artist", trackName: "Moves" },
+    source.id,
+  );
+  assert.ok(jobId != null);
+  const save = db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)");
+  save.run("downloadJobTransfers:not-json", "{");
+  save.run("downloadJobTransfers:not-objects", '["bad"]');
+
+  db.transaction(() => ownership.transferDownloadOwnershipInTransaction(jobId, target.id))();
+
+  assert.deepEqual(
+    db
+      .prepare<[], { key: string }>(
+        "SELECT key FROM settings WHERE key LIKE 'downloadJobTransfers:%' ORDER BY key",
+      )
+      .all()
+      .map((row) => row.key),
+    [`downloadJobTransfers:${jobId}`],
+  );
 });
 
 test("recording a transfer prunes transfer history for settled downloads only", () => {
