@@ -64,6 +64,13 @@ export async function processSystemTask(
 ) {
   const kind = String(payload?.kind || "").trim();
   switch (kind) {
+    case "wrapped-build": {
+      if (typeof payload?.userId !== "number" || typeof payload.timeZone !== "string")
+        throw new Error("Invalid recap job");
+      const { processWrappedBuild } = await import("./wrapped/reports.ts");
+      await processWrappedBuild(payload.userId, payload.timeZone);
+      return;
+    }
     case "weekly-flow-refresh": {
       const { runScheduledFlowRefresh } = await import("./flows/flowScheduler.ts");
       await runScheduledFlowRefresh();

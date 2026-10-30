@@ -448,7 +448,8 @@ export function getSystemTaskQueueName(kind: string) {
     kind === "session-cleanup" ||
     kind === "news-refresh" ||
     kind === "trending-charts-refresh" ||
-    kind === "weekly-flow-refresh"
+    kind === "weekly-flow-refresh" ||
+    kind === "wrapped-build"
   )
     return "system-task-maintenance";
   return "system-task";

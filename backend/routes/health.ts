@@ -12,6 +12,7 @@ import {
 } from "../services/apiClients/index.ts";
 import { API_CONTRACT } from "../config/apiContract.ts";
 import { APP_VERSION } from "../config/constants.ts";
+import { wrappedSeason } from "../../lib/wrapped.ts";
 import {
   resolveRequestUser,
   isAuthRequiredByConfig,
@@ -289,6 +290,7 @@ type BootstrapPayload = {
   lastfmConfigured?: boolean;
   ticketmasterConfigured?: boolean;
   inboxEnabled?: boolean;
+  wrapped?: { year: number; preview: boolean };
   newsConfigured?: boolean;
   musicbrainzConfigured?: boolean;
   metadataConfigured?: boolean;
@@ -367,6 +369,8 @@ function buildBootstrapPayload(req: CredentialRequest) {
       permissions: currentUser.permissions,
     };
     payload.authUser = currentUser.username;
+    const wrapped = currentUser.id > 0 ? wrappedSeason(APP_VERSION) : null;
+    if (wrapped) payload.wrapped = { year: wrapped.year, preview: wrapped.preview };
     payload.rootFolderConfigured = lidarrConfigured || Boolean(resolveDownloadRoot());
     payload.lidarr = {
       configured: lidarrConfigured,

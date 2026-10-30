@@ -33,6 +33,7 @@ import { useDiscoveryStatus } from "./hooks/useDiscoveryStatus";
 import { buildActivityPath, DEFAULT_ACTIVITY_VIEW } from "./navigation/activityNavConfig";
 import { routeModules } from "./navigation/routeModules.ts";
 import { getBootstrapPollIntervalMs } from "./utils/requestScheduling.ts";
+import { useLanternPreview, useWrappedSeason } from "./hooks/useWrapped.ts";
 
 function ActivityRootRedirect() {
   return <Navigate to={buildActivityPath(DEFAULT_ACTIVITY_VIEW)} replace />;
@@ -45,6 +46,8 @@ const SearchResultsPage = lazy(routeModules.search);
 const DiscoverPage = lazy(routeModules.discover);
 const ShowsPage = lazy(routeModules.shows);
 const LibraryPage = lazy(routeModules.library);
+const WrappedPage = lazy(routeModules.wrapped);
+const WrappedAnnouncement = lazy(() => import("./components/WrappedAnnouncement.tsx"));
 const BlocklistPage = lazy(routeModules.blocklist);
 const ArtistDetailsPage = lazy(routeModules.artist);
 const ArtistReleaseListPage = lazy(routeModules.artistReleases);
@@ -205,6 +208,8 @@ function AppContent() {
 }
 
 function ProtectedLayout() {
+  useLanternPreview();
+  const wrappedSeason = useWrappedSeason();
   const { appVersion, healthIssue, isHealthy, rootFolderConfigured } =
     useOutletContext<AppOutletContext>();
   const { user, bootstrap } = useAuth();
@@ -219,6 +224,13 @@ function ProtectedLayout() {
                 currentVersion={appVersion}
                 visible={!user || user.role === "admin"}
               />
+            }
+            overlay={
+              wrappedSeason && (
+                <Suspense fallback={null}>
+                  <WrappedAnnouncement />
+                </Suspense>
+              )
             }
           >
             <SpotifyReconnectNotice />
@@ -343,6 +355,7 @@ const appRoutes = createRoutesFromElements(
       <Route path="/artist/:mbid/release/:releaseMbid" element={<ReleasePage />} />
       <Route path="/artist/:mbid/appears-on" element={<ArtistReleaseListPage mode="appearsOn" />} />
       <Route path="/artist/:mbid" element={<ArtistDetailsPage />} />
+      <Route path="/wrapped" element={<WrappedPage />} />
       <Route path="/blocklist" element={<BlocklistPage />} />
       <Route path="/go/:kind" element={<ResolveLinkPage />} />
       <Route path="/share/import" element={<ShareImportPage />} />

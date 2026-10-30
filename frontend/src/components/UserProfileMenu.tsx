@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef } from "react";
+import { Link, useLocation } from "react-router";
 import { SettingsLink } from "../pages/Settings/settingsRoute";
-import { User, Heart, LogOut, ExternalLink } from "./icons";
+import { BellRinging, User, Heart, LogOut, ExternalLink } from "./icons";
 import { useAuth } from "../contexts/AuthContext";
+import { useWrappedSeason } from "../hooks/useWrapped.ts";
 import TooltipButton from "./TooltipButton";
 
 function GitHubIcon({ className = "" }) {
@@ -13,10 +15,12 @@ function GitHubIcon({ className = "" }) {
 }
 
 function UserProfileMenu() {
+  const location = useLocation();
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const { authRequired, canLogOut, logout } = useAuth();
+  const wrappedSeason = useWrappedSeason();
 
   useEffect(() => {
     if (!menuOpen) return undefined;
@@ -62,6 +66,20 @@ function UserProfileMenu() {
       {menuOpen && (
         <div className="app-profile-menu__dropdown" role="menu">
           <ul className="app-profile-menu__list">
+            {wrappedSeason && (
+              <li role="none">
+                <Link
+                  to="/wrapped"
+                  state={{ wrappedFrom: `${location.pathname}${location.search}${location.hash}` }}
+                  role="menuitem"
+                  className="app-profile-menu__item"
+                  onClick={closeMenu}
+                >
+                  <BellRinging className="app-profile-menu__item-icon" />
+                  <span>Your Wrapped</span>
+                </Link>
+              </li>
+            )}
             <li role="none">
               <SettingsLink
                 to="profile"
