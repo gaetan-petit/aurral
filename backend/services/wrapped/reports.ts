@@ -1,4 +1,5 @@
-import { db } from "../../config/db-sqlite.ts";
+import * as v from "valibot";
+import { db, dbHelpers } from "../../config/db-sqlite.ts";
 import { APP_VERSION } from "../../config/constants.ts";
 import { userOps } from "../../db/helpers/index.ts";
 import type { LibraryTracksRow, WrappedReportsRow } from "../../db/rows.ts";
@@ -10,7 +11,6 @@ import { subsonicId } from "../libraryMediaStore.ts";
 import { createSubsonicPlaylist } from "../subsonicLibraryService.ts";
 import type { RequestUser } from "../../middleware/requestUser.ts";
 import { wrappedPeriod } from "./metrics.ts";
-import type { buildWrappedSummary } from "./history.ts";
 
 const BUILD_KIND = "wrapped-build";
 
@@ -39,6 +39,55 @@ const setBannerHidden = db.prepare<[number, number]>(
 
 const SUMMARY_VERSION = 4;
 
+const leader = v.nullable(
+  v.looseObject({ name: v.string(), artist: v.string(), plays: v.number() }),
+);
+const rankedRow = {
+  key: v.string(),
+  name: v.string(),
+  artist: v.string(),
+  album: v.nullable(v.string()),
+  plays: v.number(),
+  minutes: v.number(),
+  firstPlayedAt: v.number(),
+  artwork: v.nullable(v.string()),
+  color: v.nullable(v.string()),
+  preview: v.nullable(v.string()),
+  beats: v.nullable(
+    v.looseObject({
+      start: v.number(),
+      bpm: v.number(),
+      beats: v.array(v.number()),
+      downbeat: v.number(),
+    }),
+  ),
+  libraryTrackId: v.nullable(v.number()),
+  libraryAlbumId: v.nullable(v.number()),
+};
+const storedSummarySchema = v.looseObject({
+  version: v.literal(SUMMARY_VERSION),
+  year: v.number(),
+  timeZone: v.string(),
+  totalPlays: v.number(),
+  minutes: v.nullable(v.number()),
+  uniqueArtists: v.number(),
+  uniqueSongs: v.number(),
+  uniqueAlbums: v.number(),
+  activeDays: v.number(),
+  longestStreak: v.nullable(
+    v.looseObject({ days: v.number(), start: v.string(), end: v.string() }),
+  ),
+  topArtists: v.array(v.looseObject(rankedRow)),
+  topSongs: v.array(v.looseObject(rankedRow)),
+  topAlbums: v.array(v.looseObject({ ...rankedRow, songs: v.number() })),
+  topGenres: v.array(v.looseObject({ name: v.string(), plays: v.number() })),
+  busiestDay: v.nullable(v.looseObject({ date: v.string(), plays: v.number(), topSong: leader })),
+  months: v.array(v.looseObject({ month: v.string(), plays: v.number(), topArtist: leader })),
+  hours: v.array(v.number()),
+  calendar: v.array(v.number()),
+  sources: v.array(v.looseObject({ state: v.picklist(["ready", "partial", "unavailable"]) })),
+});
+
 export const currentWrappedSeason = (now = Date.now()) => wrappedSeason(APP_VERSION, now);
 
 const activeBuild = (userId: number) =>
@@ -63,17 +112,15 @@ function cachedArtwork<Row extends { artwork: string | null }>(rows: Row[]) {
 
 export function getWrapped(season: WrappedSeason, userId: number, timeZone: string) {
   const stored = readReport.get(userId);
-  const parsed: (Awaited<ReturnType<typeof buildWrappedSummary>> & { version?: number }) | null =
-    stored?.summary ? JSON.parse(stored.summary) : null;
-  const summary =
-    parsed?.version === SUMMARY_VERSION
-      ? {
-          ...parsed,
-          topSongs: cachedArtwork(parsed.topSongs),
-          topArtists: cachedArtwork(parsed.topArtists),
-          topAlbums: cachedArtwork(parsed.topAlbums),
-        }
-      : null;
+  const parsed = dbHelpers.parseJSON(stored?.summary);
+  const summary = v.is(storedSummarySchema, parsed)
+    ? {
+        ...parsed,
+        topSongs: cachedArtwork(parsed.topSongs),
+        topArtists: cachedArtwork(parsed.topArtists),
+        topAlbums: cachedArtwork(parsed.topAlbums),
+      }
+    : null;
   const row =
     stored?.year === season.year &&
     (season.preview || stored.cutoff === season.cutoff) &&
@@ -116,7 +163,7 @@ export async function processWrappedBuild(userId: number, timeZone: string) {
     summary = JSON.stringify({
       ...(await buildWrappedSummary(userId, wrappedPeriod(season.year, timeZone, season.cutoff))),
       version: SUMMARY_VERSION,
-    });
+    } satisfies v.InferInput<typeof storedSummarySchema>);
   } catch (cause) {
     logger.warn("wrapped", "Recap build failed", { userId, cause: String(cause) });
     error = "Your listening history could not be collected. Check your connections and try again.";
