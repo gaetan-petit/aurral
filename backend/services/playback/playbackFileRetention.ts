@@ -1,3 +1,4 @@
+import * as v from "valibot";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { asAppError } from "../../../lib/errors.ts";
@@ -8,16 +9,11 @@ import { isPathInsideRoot, resolveDownloadRoot } from "../downloadPaths.ts";
 
 const SETTINGS_KEY = "playbackRetainedFiles";
 
-interface RetainedFileRecord {
-  reason?: string;
-  excludeEntityIds?: unknown;
-  playlistRoot?: unknown;
-  checkedAt?: number;
-}
+const retainedFilesSchema = v.record(v.string(), v.unknown());
+const retainedFileSchema = v.looseObject({});
 
-function readRetainedFiles(): Record<string, RetainedFileRecord> {
-  const value = dbOps.getJSONSetting<Record<string, RetainedFileRecord>>(SETTINGS_KEY);
-  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+function readRetainedFiles() {
+  return dbOps.getJSONSetting(SETTINGS_KEY, retainedFilesSchema) ?? {};
 }
 
 export function isPlaybackRetainedFile(file: string) {
@@ -61,7 +57,7 @@ export function createPlaybackDeletionGuard({
     return JSON.stringify([
       settings.integrations,
       settings.pathMappings,
-      dbOps.getJSONSetting("plexConnections"),
+      dbOps.getJSONSetting("plexConnections", v.unknown()),
     ]);
   };
   let checkedConfig: string | undefined;
@@ -112,7 +108,8 @@ export async function retryPlaybackRetainedFiles() {
   const stillOwned = (file: string) =>
     downloadTracker.getAll().some((job) => job.finalPath && localFileKey(job.finalPath) === file);
   const guards = new Map();
-  for (const [file, metadata] of files) {
+  for (const [file, stored] of files) {
+    const metadata = v.is(retainedFileSchema, stored) ? stored : null;
     // Older records have no root; only retry those within the current root.
     const playlistRoot = metadata?.playlistRoot ?? resolveDownloadRoot();
     if (

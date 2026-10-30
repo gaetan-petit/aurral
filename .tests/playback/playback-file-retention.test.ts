@@ -1,3 +1,4 @@
+import * as v from "valibot";
 import { JellyfinClient } from "../../backend/services/jellyfin.ts";
 import type { PlaybackDestination } from "../../backend/services/playback/playbackDestination.ts";
 import { audioMetadata } from "../download/fixtures.ts";
@@ -38,6 +39,10 @@ const {
   isPlaybackRetainedFile,
   retryPlaybackRetainedFiles,
 } = retention;
+const retainedFilesSchema = v.record(
+  v.string(),
+  v.looseObject({ excludeEntityIds: v.array(v.string()), playlistRoot: v.string() }),
+);
 const root = process.env.WEEKLY_FLOW_FOLDER;
 assert.ok(root != null);
 
@@ -637,9 +642,8 @@ test("retained retries preserve exclusions and share a snapshot only within matc
   await fs.access(external);
   assert.deepEqual(calls, [["a", "old-a"], ["b"]]);
   assert.deepEqual(
-    dbOps.getJSONSetting<Record<string, { excludeEntityIds: string[]; playlistRoot: string }>>(
-      "playbackRetainedFiles",
-    )![localFileKey(external)].excludeEntityIds,
+    dbOps.getJSONSetting("playbackRetainedFiles", retainedFilesSchema)![localFileKey(external)]
+      .excludeEntityIds,
     ["a", "old-a"],
   );
 });
@@ -678,9 +682,8 @@ for (const changeBeforeReset of [false, true]) {
     await retryPlaybackRetainedFiles();
     await fs.access(file);
     assert.equal(
-      dbOps.getJSONSetting<Record<string, { excludeEntityIds: string[]; playlistRoot: string }>>(
-        "playbackRetainedFiles",
-      )![localFileKey(file)].playlistRoot,
+      dbOps.getJSONSetting("playbackRetainedFiles", retainedFilesSchema)![localFileKey(file)]
+        .playlistRoot,
       path.resolve(root),
     );
     unavailable = false;

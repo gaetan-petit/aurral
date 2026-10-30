@@ -1,3 +1,4 @@
+import * as v from "valibot";
 import { requireFixture } from "../playlists/fixtures.ts";
 import { test, beforeEach, afterAll, afterEach, vi } from "vite-plus/test";
 import assert from "node:assert/strict";
@@ -10,10 +11,13 @@ import {
   resetDatabase,
 } from "../helpers/backendTestHarness.ts";
 
-type MigrationState = {
-  status: string;
-  items: Record<string, { status: string; reason?: string }>;
-};
+const migrationStateSchema = v.looseObject({
+  status: v.string(),
+  items: v.record(
+    v.string(),
+    v.looseObject({ status: v.string(), reason: v.optional(v.string()) }),
+  ),
+});
 
 const [
   isolatedState,
@@ -164,7 +168,7 @@ test("retains a permanent source when tracker updates are not persisted", async 
   assert.equal(downloadTracker.getJob(jobId)!.finalPath, source);
 });
 
-test("repairs stale tracker paths from a completed migration", async () => {
+test("repairs stale tracker paths from a completed migration with an unreadable entry", async () => {
   const playlist = flowPlaylistConfig.createStaticPlaylist({ name: "Repair Complete" });
   const source = path.join(
     root,
@@ -193,6 +197,7 @@ test("repairs stale tracker paths from a completed migration", async () => {
         destination,
         identity: { artistName: "Artist", albumName: "Album", trackName: "Track" },
       },
+      [path.join(root, "unreadable.flac")]: null,
     },
   });
 
@@ -373,7 +378,7 @@ test("retains partial and ambiguous files instead of guessing", async () => {
   assert.equal(result.retained, 2);
   assert.equal(result.status, "needs-review");
   const state = requireFixture(
-    dbOps.getJSONSetting<MigrationState>("aurralDownloadFolderMigration"),
+    dbOps.getJSONSetting("aurralDownloadFolderMigration", migrationStateSchema),
   );
   assert.equal(state.items[partial].reason, "partial file");
   assert.equal(state.items[ambiguous].reason, "ambiguous media identity");
@@ -385,7 +390,7 @@ test("retains partial and ambiguous files instead of guessing", async () => {
   const rerun = await migrateAurralDownloadFolder({ root });
   assert.equal(rerun.status, "complete");
   const resolved = requireFixture(
-    dbOps.getJSONSetting<MigrationState>("aurralDownloadFolderMigration"),
+    dbOps.getJSONSetting("aurralDownloadFolderMigration", migrationStateSchema),
   );
   assert.equal(resolved.status, "complete");
   assert.equal(resolved.items[partial].status, "removed");

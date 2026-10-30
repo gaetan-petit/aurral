@@ -1,3 +1,4 @@
+import * as v from "valibot";
 import { createReadStream, constants as fsConstants } from "fs";
 import type { Stats } from "fs";
 import { createHash } from "crypto";
@@ -86,22 +87,21 @@ function log(
   fn.call(logger, message, ...(details ? [details] : []));
 }
 
-interface MigrationItem {
-  status?: string;
-  destination?: string;
-  reason?: string;
-  updatedAt?: number;
-  identity?: Awaited<ReturnType<typeof resolveIdentity>>;
-}
+const migrationStateSchema = v.looseObject({
+  version: v.number(),
+  rootPath: v.string(),
+  status: v.optional(v.string()),
+  items: v.optional(v.record(v.string(), v.unknown())),
+});
+const migrationItemSchema = v.looseObject({
+  status: v.optional(v.string()),
+  destination: v.optional(v.string()),
+  reason: v.optional(v.string()),
+});
 
-export interface MigrationState {
-  version: number;
-  rootPath: string;
-  status: string;
-  items: Record<string, MigrationItem>;
-  updatedAt: number;
-  lastResult?: unknown;
-}
+type MigrationState = Required<v.InferOutput<typeof migrationStateSchema>>;
+
+const readItem = (value: unknown) => (v.is(migrationItemSchema, value) ? value : null);
 
 function newMigrationState(rootPath: string): MigrationState {
   return {
@@ -114,19 +114,18 @@ function newMigrationState(rootPath: string): MigrationState {
 }
 
 function loadMigrationState(rootPath: string) {
-  const stored = dbOps.getJSONSetting<MigrationState>(AURRAL_DOWNLOAD_FOLDER_MIGRATION_SETTING);
+  const stored = dbOps.getJSONSetting(
+    AURRAL_DOWNLOAD_FOLDER_MIGRATION_SETTING,
+    migrationStateSchema,
+  );
   if (
     !stored ||
     stored.version !== AURRAL_DOWNLOAD_FOLDER_MIGRATION_VERSION ||
-    path.resolve(String(stored.rootPath || "")) !== rootPath
+    path.resolve(stored.rootPath) !== rootPath
   ) {
     return newMigrationState(rootPath);
   }
-  return {
-    ...newMigrationState(rootPath),
-    ...stored,
-    items: stored.items && typeof stored.items === "object" ? stored.items : {},
-  };
+  return { ...newMigrationState(rootPath), ...stored };
 }
 
 function saveMigrationState(state: MigrationState) {
@@ -384,9 +383,10 @@ async function repairCompletedMigrationState(
     failed: 0,
     failures: [],
   };
-  for (const [sourcePath, item] of Object.entries(state.items)) {
+  for (const [sourcePath, stored] of Object.entries(state.items)) {
+    const item = readItem(stored);
     if (item?.status !== "complete" || !item.destination) continue;
-    const destination = path.resolve(String(item.destination));
+    const destination = path.resolve(item.destination);
     const destinationStat = await fs.stat(destination).catch(() => null);
     if (!isPathInsideRoot(destination, rootPath) || !destinationStat?.isFile()) {
       const reason = "completed migration destination is missing";
@@ -498,7 +498,7 @@ async function defaultIndexDestinations({
 }
 
 function itemState(state: MigrationState, sourcePath: string) {
-  return state.items[sourcePath] || {};
+  return readItem(state.items[sourcePath]) ?? {};
 }
 
 function retainItem(
@@ -899,8 +899,9 @@ export async function migrateAurralDownloadFolder(options: MigrationOptions = {}
     }
   }
 
-  for (const [sourcePath, item] of Object.entries(state.items)) {
+  for (const [sourcePath, stored] of Object.entries(state.items)) {
     if (fileSet.has(sourcePath)) continue;
+    const item = readItem(stored);
     const retainedIndexedSource =
       item?.status === "retained" && item.reason === PLAYBACK_RETENTION_REASON && item.destination;
     if (item?.status === "retained" && !retainedIndexedSource) {
@@ -925,7 +926,9 @@ export async function migrateAurralDownloadFolder(options: MigrationOptions = {}
     }
     state.items[sourcePath] = { ...item, status: "complete", updatedAt: Date.now() };
   }
-  const stateNeedsReview = Object.values(state.items).some((item) => item?.status === "retained");
+  const stateNeedsReview = Object.values(state.items).some(
+    (item) => readItem(item)?.status === "retained",
+  );
   state.status = result.failed || result.retained || stateNeedsReview ? "needs-review" : "complete";
   result.status = state.status;
   state.lastResult = {
