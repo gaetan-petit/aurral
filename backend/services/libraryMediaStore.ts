@@ -1266,17 +1266,58 @@ function matchLibraryAlbumTrack<T extends MatchableTrack>(
   return tagged.length === 1 ? tagged[0] : null;
 }
 
+const albumByKeyStmt = db.prepare<[string], Pick<LibraryAlbumsRow, "id">>(
+  "SELECT id FROM library_albums WHERE identity_key = ?",
+);
+
+const albumHasRecordingStmt = db.prepare<[number, string], { 1: number }>(
+  `SELECT 1 FROM library_album_tracks AS link
+   JOIN library_tracks AS track ON track.id = link.track_id
+   WHERE link.album_id = ? AND track.mbid = ? LIMIT 1`,
+);
+
+const listedTracksAtPlaceStmt = db.prepare<
+  [number, number, number, number | null],
+  LibraryTracksRow
+>(
+  `SELECT track.* FROM library_album_tracks AS link
+   JOIN library_albums AS album ON album.id = link.album_id
+   JOIN library_tracks AS track ON track.id = link.track_id
+   WHERE link.album_id = ? AND link.disc_number = ? AND link.track_number = ?
+     AND ${TRACK_IS_LISTED}
+     AND (track.id = ? OR NOT EXISTS (
+       SELECT 1 FROM library_media_files AS media
+       WHERE media.track_id = track.id AND (media.album_id = link.album_id OR media.album_id IS NULL)
+     ))`,
+);
+
+// A file with a recording ID the album does not list, as when MusicBrainz
+// merged the listed one into it, is the song the track list names at its
+// place with its title, when no other file has it.
 export function findLibraryAlbumTrack(
   albumKey: string | null,
-  { title, discNumber, trackNumber }: { title: string; discNumber: number; trackNumber: number },
+  {
+    title,
+    discNumber,
+    trackNumber,
+    trackMbid,
+  }: { title: string; discNumber: number; trackNumber: number; trackMbid: string | null },
+  heldBy: number | null = null,
 ) {
-  const album = db
-    .prepare<[string], Pick<LibraryAlbumsRow, "id">>(
-      "SELECT id FROM library_albums WHERE identity_key = ?",
-    )
-    .get(normalizeText(albumKey));
+  const album = albumByKeyStmt.get(normalizeText(albumKey));
   if (!album) return null;
-  return matchLibraryAlbumTrack(albumTracksStmt.all(album.id), { title, discNumber, trackNumber });
+  if (!trackMbid) {
+    return matchLibraryAlbumTrack(albumTracksStmt.all(album.id), {
+      title,
+      discNumber,
+      trackNumber,
+    });
+  }
+  if (trackNumber <= 0 || albumHasRecordingStmt.get(album.id, trackMbid)) return null;
+  const same = listedTracksAtPlaceStmt
+    .all(album.id, discNumber || 1, trackNumber, heldBy)
+    .filter((track) => isSameSong(track.title, title));
+  return same.length === 1 ? same[0] : null;
 }
 
 // Of an artist's albums with one title, an untagged album or file belongs to

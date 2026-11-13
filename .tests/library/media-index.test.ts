@@ -1637,6 +1637,43 @@ test("a file at a listed song's place is that song, keeping its own title when t
   });
 });
 
+test("on an album someone asked for, a file tagged with a recording the album does not list is the listed song without a file at its place and with its title, not another version or song", async (t: import("vite-plus/test").TestContext) => {
+  const root = await mkdtemp(path.join(tmpdir(), "aurral-track-list-requested-merge-"));
+  const artist = `Requested Merge ${process.pid}`;
+  const title = `Requested Merge ${process.pid}`;
+  const album = listedAlbum(artist, uuid("dddddddd", 41), title, 410, [
+    "One",
+    "Two",
+    "Three",
+    "Interlude I",
+  ]);
+  t.onTestFinished(async () => {
+    removeArtistsNamed(artist);
+    await rm(root, { recursive: true, force: true });
+  });
+  await withReleaseGroups({ [album.releaseGroup]: album.group }, async () => {
+    await album.file(root, "One");
+    await scanConfiguredLibrary({ musicRoot: root, includeReadOnly: false });
+    db.prepare<[string, string]>(
+      `UPDATE library_albums SET metadata_json = json_set(metadata_json,
+         '$.trackListComplete', json('true'), '$.requestedRelease', ?) WHERE title = ?`,
+    ).run(uuid("bbbbbbbb", 410), title);
+
+    await taggedTrack(root, artist, title, album, "Two", 2, uuid("c9c9c9c9", 2));
+    await taggedTrack(root, artist, title, album, "Three (Live)", 3, uuid("c9c9c9c9", 3));
+    await taggedTrack(root, artist, title, album, "Interlude II", 4, uuid("c9c9c9c9", 4));
+    await scanConfiguredLibrary({ musicRoot: root, includeReadOnly: false });
+    assert.deepEqual(albumListing(title).sort(), [
+      ["Interlude I", "missing"],
+      ["Interlude II", "have"],
+      ["One", "have"],
+      ["Three (Live)", "have"],
+      ["Three", "missing"],
+      ["Two", "have"],
+    ]);
+  });
+});
+
 test("a file is the listed song its recording is, before another whose title it shares at its place", async (t: import("vite-plus/test").TestContext) => {
   const root = await mkdtemp(path.join(tmpdir(), "aurral-track-list-recording-first-"));
   const artist = `Recording First List ${process.pid}`;

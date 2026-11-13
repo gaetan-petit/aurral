@@ -498,10 +498,9 @@ export async function scanMusicRoot({
             (titledAlbum && legacyKeyed.albumIds.has(titledAlbum.id) ? null : titledAlbum);
           const releaseAlbum = findLibraryAlbumByReleaseMbid(record.releaseGroupMbid) || namedAlbum;
           const albumKey = releaseAlbum?.identity_key || record.albumKey;
-          const listedTrack =
-            record.trackMbid || legacyKeyed.paths.has(filePath)
-              ? null
-              : findLibraryAlbumTrack(albumKey, record);
+          const listedTrack = legacyKeyed.paths.has(filePath)
+            ? null
+            : findLibraryAlbumTrack(albumKey, record, existing?.track_id);
           const trackKey = listedTrack?.identity_key || record.trackKey;
           const before =
             existing && !legacyKeyed.paths.has(filePath)
