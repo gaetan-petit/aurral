@@ -9,6 +9,7 @@ import { keepInLibrary } from "./playlists/playlistLibrary.ts";
 import { downloadWorker } from "./downloadJobs/downloadWorker.ts";
 import { reuseTrackForPlaylist } from "./downloadJobs/fileReuse.ts";
 import { libraryManager } from "./libraryManager.ts";
+import { isUnknownTitle } from "./trackMatching/titleText.ts";
 
 const libraryTrackStmt = db.prepare("SELECT 1 FROM library_tracks WHERE mbid = ? LIMIT 1");
 
@@ -81,7 +82,12 @@ export async function requestLibraryTrack(
         trackMbid: track.trackMbid,
         albumMbid: track.albumMbid,
       });
+  // No source can search for an "[unknown]" title, so a track MusicBrainz
+  // hasn't named yet is monitored and waits for its name instead.
+  const unnamed = "MusicBrainz doesn't have this track's title yet";
   if (monitoredTrack) {
+    if (monitoredTrack.queuedJobIds.length === 0 && isUnknownTitle(track.trackName))
+      return { error: unnamed, statusCode: 409 };
     for (const jobId of monitoredTrack.queuedJobIds) {
       recordTrackJobQueued(downloadTracker.getJob(jobId), user);
     }
@@ -92,6 +98,7 @@ export async function requestLibraryTrack(
     };
   }
 
+  if (isUnknownTitle(track.trackName)) return { error: unnamed, statusCode: 409 };
   const cause = { kind: automatic ? "monitoring" : "request", playlistId: null } as const;
   const existingJob = findQueuedLibraryTrackJob(track);
   if (existingJob?.status === "saved") {

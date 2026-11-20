@@ -1933,6 +1933,198 @@ test("asking for an album leaves out its [silence] places, and a file tagged wit
   );
 });
 
+test("a recent album asked for while MusicBrainz lists [unknown] tracks takes the names MusicBrainz gives them, by the same or a new recording, when its missing tracks are searched or it is asked for again, past jobs queued for its placeholders, and queues them as part of the album; an older one is not read again, and a change elsewhere on the list is left for a scan", async (t: TestContext) => {
+  const artistMbid = "5e5e5e5e-5e5e-4e5e-8e5e-000000000031";
+  const recentMbid = "5e5e5e5e-5e5e-4e5e-8e5e-000000000032";
+  const olderMbid = "5e5e5e5e-5e5e-4e5e-8e5e-000000000033";
+  const askedAgainMbid = "5e5e5e5e-5e5e-4e5e-8e5e-000000000034";
+  const stillUnknownMbid = "5e5e5e5e-5e5e-4e5e-8e5e-000000000035";
+  const recording = (index: number) => `5e5e5e5e-5e5e-4e5e-8e5e-40000000000${index}`;
+  const daysAgo = (days: number) =>
+    new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const albums = new Map([
+    [
+      recentMbid,
+      {
+        releaseDate: daysAgo(2),
+        tracks: [
+          [recording(1), "Named"],
+          [recording(2), "[unknown]"],
+          [recording(3), "[unknown]"],
+        ],
+      },
+    ],
+    [olderMbid, { releaseDate: daysAgo(60), tracks: [[recording(5), "[unknown]"]] }],
+    [askedAgainMbid, { releaseDate: daysAgo(2), tracks: [[recording(6), "[unknown]"]] }],
+    [
+      stillUnknownMbid,
+      {
+        releaseDate: daysAgo(2),
+        tracks: [
+          [recording(7), "Kept"],
+          [recording(8), "[unknown]"],
+        ],
+      },
+    ],
+  ]);
+  const reads = new Map<string, number>();
+  const metadata = await createMockHttpServer((request, response) => {
+    response.setHeader("content-type", "application/json");
+    const albumMbid = new URL(request.url || "/", "http://127.0.0.1").pathname.replace(
+      /^\/album\//,
+      "",
+    );
+    const album = albums.get(albumMbid);
+    if (!album) {
+      response.writeHead(404);
+      response.end("{}");
+      return;
+    }
+    reads.set(albumMbid, (reads.get(albumMbid) || 0) + 1);
+    response.end(
+      JSON.stringify({
+        id: albumMbid,
+        title: `Album ${albumMbid.slice(-2)}`,
+        artistid: artistMbid,
+        artists: [{ id: artistMbid, artistname: "Early Artist" }],
+        releasedate: album.releaseDate,
+        releases: [
+          {
+            id: `release-${albumMbid.slice(-2)}`,
+            status: "Official",
+            releasedate: album.releaseDate,
+            tracks: album.tracks.map(([recordingid, trackname], index) => ({
+              id: `release-${albumMbid.slice(-2)}-${index}`,
+              recordingid,
+              trackname,
+              artistid: artistMbid,
+              durationms: 4000,
+              trackposition: index + 1,
+              mediumnumber: 1,
+            })),
+          },
+        ],
+      }),
+    );
+  });
+  const originalSettings = dbOps.getSettings();
+  const originalWorkerStart = downloadWorker.start;
+  dbOps.updateSettings({
+    ...originalSettings,
+    integrations: {
+      ...originalSettings.integrations,
+      slskd: { enabled: true, url: "http://127.0.0.1:9", apiKey: "test-key" },
+      metadata: {
+        ...originalSettings.integrations?.metadata,
+        baseUrl: metadata.url,
+      },
+    },
+  });
+  clearApiCaches();
+  downloadWorker.start = async () => {};
+  t.onTestFinished(async () => {
+    downloadWorker.start = originalWorkerStart;
+    dbOps.updateSettings(originalSettings);
+    clearApiCaches();
+    await metadata.close();
+  });
+  const request = async (albumMbid: string) => {
+    const requested = await callRoute<RequestedAlbumBody>("/library/albums/request", "POST", {
+      albumMbid,
+      albumName: `Album ${albumMbid.slice(-2)}`,
+      artistMbid,
+      artistName: "Early Artist",
+    });
+    assert.equal(requested.status, 201, JSON.stringify(requested.body));
+    return {
+      albumId: Number(requested.body.album.id),
+      queued: requested.body.jobIds.map((id) => getJob(id).trackName),
+    };
+  };
+  const listed = (albumId: number) =>
+    db
+      .prepare<[number], { title: string; mbid: string }>(
+        `SELECT track.title, track.mbid
+         FROM library_album_tracks AS link
+         JOIN library_tracks AS track ON track.id = link.track_id
+         WHERE link.album_id = ? ORDER BY link.track_number`,
+      )
+      .all(albumId);
+
+  const recent = await request(recentMbid);
+  const older = await request(olderMbid);
+  const askedAgain = await request(askedAgainMbid);
+  const stillUnknown = await request(stillUnknownMbid);
+  assert.deepEqual(recent.queued, ["Named"]);
+  assert.deepEqual(older.queued, []);
+  assert.deepEqual(askedAgain.queued, []);
+  const placeholderJob = (albumMbid: string, trackMbid: string) => {
+    const jobId = downloadTracker.addJob(
+      {
+        artistName: "Early Artist",
+        trackName: "[unknown]",
+        albumName: `Album ${albumMbid.slice(-2)}`,
+        albumMbid,
+        trackMbid,
+      },
+      "library",
+    );
+    assert.ok(jobId);
+    return jobId;
+  };
+  downloadTracker.setCancelled(placeholderJob(recentMbid, recording(2)));
+  downloadTracker.setFailed(placeholderJob(askedAgainMbid, recording(6)), "No title yet");
+
+  albums.set(recentMbid, {
+    releaseDate: daysAgo(2),
+    tracks: [
+      [recording(1), "Named"],
+      [recording(2), "Same Recording"],
+      [recording(4), "New Recording"],
+    ],
+  });
+  albums.set(olderMbid, { releaseDate: daysAgo(60), tracks: [[recording(5), "Late Name"]] });
+  albums.set(askedAgainMbid, { releaseDate: daysAgo(2), tracks: [[recording(6), "Asked Again"]] });
+  albums.set(stillUnknownMbid, {
+    releaseDate: daysAgo(2),
+    tracks: [
+      [recording(9), "Kept"],
+      [recording(8), "[unknown]"],
+    ],
+  });
+  clearApiCaches();
+  reads.clear();
+  await libraryManager.searchAlbumMissingTracks(recent.albumId, { newlyNamedOnly: true });
+  await libraryManager.searchAlbumMissingTracks(older.albumId);
+  await libraryManager.searchAlbumMissingTracks(stillUnknown.albumId);
+  assert.deepEqual((await request(askedAgainMbid)).queued, ["Asked Again"]);
+
+  assert.deepEqual(listed(recent.albumId), [
+    { title: "Named", mbid: recording(1) },
+    { title: "Same Recording", mbid: recording(2) },
+    { title: "New Recording", mbid: recording(4) },
+  ]);
+  assert.deepEqual(
+    downloadTracker
+      .getAll()
+      .filter((job) => job.status === "pending" && !["Named", "Kept"].includes(job.trackName))
+      .map((job) => [job.trackName, job.requestKind])
+      .sort(),
+    [
+      ["Asked Again", "album"],
+      ["New Recording", "album"],
+      ["Same Recording", "album"],
+    ],
+  );
+  assert.deepEqual(listed(older.albumId), [{ title: "[unknown]", mbid: recording(5) }]);
+  assert.deepEqual(listed(askedAgain.albumId), [{ title: "Asked Again", mbid: recording(6) }]);
+  assert.deepEqual(listed(stillUnknown.albumId), [
+    { title: "Kept", mbid: recording(7) },
+    { title: "[unknown]", mbid: recording(8) },
+  ]);
+  assert.deepEqual([...reads.keys()], [recentMbid, stillUnknownMbid, askedAgainMbid]);
+});
+
 test("an album's track list adds no missing [silence] places", () => {
   const recording = (index: number) => `5e5e5e5e-5e5e-4e5e-8e5e-30000000000${index}`;
   const artist = libraryStore.upsertLibraryArtist({ identityKey: "name:quiet", name: "Quiet" });

@@ -454,16 +454,41 @@ test("an album whose only missing tracks are unmonitored is not due", async () =
   assert.equal(searchTime(album.id), null);
 });
 
-test("the search never queues a track MusicBrainz titles [unknown], and an album missing only those is not due", async () => {
+test("the search never queues a track MusicBrainz titles [unknown]; an album missing those is due in the 30 days after its release, even with downloads in progress, and then queues only tracks it names; a cancelled one waits for Retry", async () => {
   const retitle = (trackId: number) =>
     db.prepare("UPDATE library_tracks SET title = '[unknown]' WHERE id = ?").run(trackId);
   const { albumMbid, tracks, jobIds } = createAlbum({ tracks: ["failed", "missing", "missing"] });
   retitle(requireFixture(tracks[0]).id);
   retitle(requireFixture(tracks[1]).id);
-  const untitled = createAlbum({ tracks: ["missing", "available"] });
-  retitle(requireFixture(untitled.tracks[0]).id);
+  const recent = utcDay(Date.now() - 2 * DAY_MS);
+  const untitled = createAlbum({ tracks: ["missing", "available"], releaseDate: recent });
+  const placeholder = requireFixture(untitled.tracks[0]);
+  retitle(placeholder.id);
+  const blocked = createAlbum({
+    tracks: ["pending", "failed", "missing"],
+    releaseDate: recent,
+  });
+  retitle(requireFixture(blocked.tracks[2]).id);
+  const stopped = createAlbum({
+    tracks: ["failed", "cancelled", "missing"],
+    releaseDate: recent,
+  });
+  retitle(requireFixture(stopped.tracks[2]).id);
+  const settled = createAlbum({
+    tracks: ["missing", "available"],
+    releaseDate: utcDay(Date.now() - 60 * DAY_MS),
+  });
+  retitle(requireFixture(settled.tracks[0]).id);
+  atTime(Date.now() - 10 * DAY_MS, () =>
+    addTrackJob({
+      ...untitled,
+      track: { ...placeholder, title: "[unknown]" },
+      trackMbid: placeholder.mbid,
+      state: "cancelled",
+    }),
+  );
 
-  assert.equal(await runMissingTrackSearch(), 1);
+  assert.equal(await runMissingTrackSearch(), 3);
 
   assert.equal(getJob(jobIds[0]).status, "failed");
   assert.equal(
@@ -474,8 +499,18 @@ test("the search never queues a track MusicBrainz titles [unknown], and an album
     albumJobs(albumMbid).find((job) => job.trackMbid === requireFixture(tracks[2]).mbid)?.status,
     "pending",
   );
-  assert.equal(albumJobs(untitled.albumMbid).length, 0);
-  assert.equal(searchTime(untitled.album.id), null);
+  assert.deepEqual(
+    albumJobs(untitled.albumMbid).map((job) => job.status),
+    ["cancelled"],
+  );
+  assert.notEqual(searchTime(untitled.album.id), null);
+  assert.notEqual(searchTime(blocked.album.id), null);
+  assert.deepEqual(
+    blocked.jobIds.map((id) => getJob(id).status),
+    ["pending", "failed"],
+  );
+  assert.equal(searchTime(settled.album.id), null);
+  assert.equal(searchTime(stopped.album.id), null);
 });
 
 test("Retry skips unmonitored tracks, and turning an album back on monitors all of its tracks", async () => {

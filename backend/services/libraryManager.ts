@@ -30,7 +30,6 @@ import {
 } from "./downloadJobs/downloadTracker.ts";
 import {
   buildIdentityKey,
-  chooseLibraryAlbumEdition,
   linkLibraryAlbumTrack,
   markLibraryMediaFilesUnavailable,
   removeLibraryAlbumTracksWithoutAvailableMedia,
@@ -113,6 +112,7 @@ import {
   isVariousArtistsCredit,
 } from "./trackMatching/titleText.ts";
 import { recordTrackJobQueued } from "./aurralHistoryService.ts";
+import { relistProvisionalAlbum, storeAlbumEdition } from "./albumTrackListRefresh.ts";
 const metadataLookups = new PQueue({ concurrency: 4 });
 
 type LibraryArtistRecord = ReturnType<typeof getLibraryForAlbumReferences>["artists"][number];
@@ -283,6 +283,7 @@ type AlbumAddOptions = {
   requestGroupId?: string | null;
   trackIds?: number[];
   skipCancelledTracks?: boolean;
+  requestKind?: "album" | "track";
   edition?: string | null;
   releaseMbid?: string | null;
   cause?: JobCause;
@@ -811,7 +812,7 @@ export class LibraryManager {
     const requestedTrackIds = Array.isArray(options.trackIds)
       ? new Set(options.trackIds.map(Number))
       : null;
-    const requestKind = requestedTrackIds ? "track" : "album";
+    const requestKind = options.requestKind ?? (requestedTrackIds ? "track" : "album");
     const cause =
       options.cause ??
       ({ kind: options.monitoringToken ? "monitoring" : "request", playlistId: null } as const);
@@ -871,7 +872,11 @@ export class LibraryManager {
         return { status: "skipped" };
       }
       const relation = (track.albums || []).find((entry) => entry.albumId === album.id);
-      const matchingJobs = albumJobs.filter((job) => jobMatchesTrack(job, track));
+      // A job queued while the track was "[unknown]" can't search for the
+      // name MusicBrainz gave it since, so the track gets a job of its own.
+      const matchingJobs = albumJobs.filter(
+        (job) => jobMatchesTrack(job, track) && !isUnknownTitle(job.trackName),
+      );
       const activeJob = matchingJobs.find(
         (job) =>
           job.status === "pending" ||
@@ -1615,7 +1620,9 @@ export class LibraryManager {
         const result =
           albumMbid && album.metadata?.trackListComplete !== true
             ? await this._addAlbum(album.artistId, albumMbid, album.title)
-            : await this._finishAlbum(album.id);
+            : await this._relistProvisionalAlbum(Number(album.id)).then(() =>
+                this._finishAlbum(album.id),
+              );
         if (result?.error) return result;
         return { ...result, monitored: true };
       }
@@ -1743,7 +1750,10 @@ export class LibraryManager {
         const result: MethodResult<"_finishAlbum"> = await serializeMonitoringUpdate(
           _albumMonitoringUpdates,
           album.id,
-          () => this._finishAlbum(album.id, { trackIds: [trackId] }),
+          async () => {
+            await this._relistProvisionalAlbum(album.id);
+            return this._finishAlbum(album.id, { trackIds: [trackId] });
+          },
         );
         queuedJobIds.push(...(result?.jobIds || []));
       } else {
@@ -1789,14 +1799,23 @@ export class LibraryManager {
     return result?.error || result?.albumManaged === false ? null : result;
   }
 
-  async searchAlbumMissingTracks(canonicalId: string | number) {
+  async searchAlbumMissingTracks(
+    canonicalId: string | number,
+    { newlyNamedOnly = false }: { newlyNamedOnly?: boolean } = {},
+  ) {
     const albumId = Number(canonicalId);
-    return serializeMonitoringUpdate(_albumMonitoringUpdates, albumId, () =>
-      this._finishAlbum(albumId, {
+    return serializeMonitoringUpdate(_albumMonitoringUpdates, albumId, async () => {
+      const named = await this._relistProvisionalAlbum(albumId);
+      return this._finishAlbum(albumId, {
         skipCancelledTracks: true,
         cause: { kind: "missing", playlistId: null },
-      }),
-    );
+        ...(newlyNamedOnly && { trackIds: named, requestKind: "album" as const }),
+      });
+    });
+  }
+
+  _relistProvisionalAlbum(albumId: number) {
+    return relistProvisionalAlbum(albumId, (artistId) => this._albumEdition({ id: artistId }));
   }
 
   async cancelAlbum(canonicalId: unknown) {
@@ -1834,15 +1853,11 @@ export class LibraryManager {
     if (!release || !listsEveryTrack(release)) {
       return { error: "The album has no such edition", statusCode: 422 };
     }
-    const artists = new Map<string | null | undefined, string>(
-      group.artists.map((artist) => [artist.id, artist.name]),
-    );
-    const compilation = isVariousArtistsCredit(artists.get(group.artistId), group.artistId);
-    chooseLibraryAlbumEdition(
+    storeAlbumEdition(
       album.id,
-      { ...release, title: release.title || group.title },
+      group,
+      release,
       this._albumEdition(library?.artists.find((entry) => entry.id === album.artistId) || null),
-      (track) => (compilation && artists.get(track.artistId)) || null,
     );
     return { success: true, releaseMbid: release.id };
   }
@@ -1983,8 +1998,9 @@ export class LibraryManager {
       existing && existingAlbum && (existingAlbum.trackIds?.length ?? 0) > 0
         ? { existing, existingAlbum }
         : null;
-    const finishExisting = (found: NonNullable<typeof tracked>) => {
+    const finishExisting = async (found: NonNullable<typeof tracked>) => {
       if (userRequest && !wasMonitored) this._setAlbumMonitored(found.existingAlbum, true);
+      await this._relistProvisionalAlbum(Number(found.existing.id));
       return this._finishAlbum(found.existing.id, options);
     };
     const finishExistingOr = <Result>(error: Result) => (tracked ? finishExisting(tracked) : error);

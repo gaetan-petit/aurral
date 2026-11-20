@@ -295,6 +295,93 @@ test("an incomplete BrainzMash album uses one cached MusicBrainz release browse"
   }
 });
 
+test("an album released in the last 30 days that lists [unknown] tracks is cached for a day, and a named or older one for a week; a read that waits when stale gets the new names", async () => {
+  const previousSettings = dbOps.getSettings();
+  const provisionalMbid = "22222222-2222-4222-8222-222222222222";
+  const namedMbid = "33333333-3333-4333-8333-333333333333";
+  const lateMbid = "44444444-4444-4444-8444-444444444444";
+  const olderMbid = "55555555-5555-4555-8555-555555555555";
+  const daysAgo = (days: number) =>
+    new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  let lateTitle = "[unknown]";
+  const albumBody = (albumMbid: string) => ({
+    id: albumMbid,
+    title: "Early Album",
+    releasedate: daysAgo(albumMbid === olderMbid ? 60 : 2),
+    releases: [
+      {
+        id: "early-release",
+        tracks: [
+          { id: "early-track-1", recordingid: "early-recording-1", trackname: "Named" },
+          {
+            id: "early-track-2",
+            recordingid: "early-recording-2",
+            trackname:
+              albumMbid === namedMbid
+                ? "Also Named"
+                : albumMbid === lateMbid
+                  ? lateTitle
+                  : "[unknown]",
+          },
+        ],
+      },
+    ],
+  });
+  const server = await createMockHttpServer((request, response) => {
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify(albumBody(String(request.url).replace("/album/", ""))));
+  });
+  const freshFor = (mbid: string) =>
+    db
+      .prepare<[string], number>(
+        "SELECT fresh_until FROM metadata_response_cache WHERE cache_key = ?",
+      )
+      .pluck()
+      .get(`${server.url}/album/${mbid}:{}`);
+
+  try {
+    dbOps.updateSettings({
+      ...previousSettings,
+      integrations: {
+        ...(previousSettings.integrations || {}),
+        metadata: { ...(previousSettings.integrations?.metadata || {}), baseUrl: server.url },
+      },
+    });
+    clearMetadataProviderCaches();
+    const startedAt = Date.now();
+
+    await getAlbumByMbid(provisionalMbid);
+    await getAlbumByMbid(namedMbid);
+    await getAlbumByMbid(olderMbid);
+
+    const day = 24 * 60 * 60 * 1000;
+    const provisional = freshFor(provisionalMbid);
+    const named = freshFor(namedMbid);
+    assert.ok(
+      provisional && provisional >= startedAt + day && provisional < startedAt + day + 60_000,
+    );
+    assert.ok(named && named >= startedAt + 7 * day && named < startedAt + 7 * day + 60_000);
+    const older = freshFor(olderMbid);
+    assert.ok(older && older >= startedAt + 7 * day && older < startedAt + 7 * day + 60_000);
+
+    await dbOps.setMetadataResponseAsync(`${server.url}/album/${lateMbid}:{}`, {
+      value: albumBody(lateMbid),
+      freshUntil: Date.now() - 1,
+      staleUntil: Date.now() + day,
+    });
+    lateTitle = "Late Name";
+    const refreshed = await getAlbumByMbid(lateMbid, { waitWhenStale: true });
+    assert.deepEqual(
+      refreshed.releases[0]?.tracks.map((track) => track.title),
+      ["Named", "Late Name"],
+    );
+  } finally {
+    clearMetadataProviderCaches();
+    dbOps.updateSettings(previousSettings);
+    await server.close();
+  }
+});
+
 test("BrainzMash data Aurral can't read is never served, from the provider or the cache", async () => {
   const previousSettings = dbOps.getSettings();
   let requests = 0;
