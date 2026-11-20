@@ -32,6 +32,10 @@ export const isSilenceTrack = (title: unknown) => /^\s*\[silence\]\s*$/iu.test(S
 // download source can search for.
 export const isUnknownTitle = (title: unknown) => /^\s*\[unknown\]\s*$/iu.test(String(title ?? ""));
 
+// MusicBrainz names an album's "[unknown]" tracks in the weeks after its
+// release. Aurral watches for those names for this long after the release.
+export const UNKNOWN_TITLE_WAIT_MS = 30 * 24 * 60 * 60 * 1000;
+
 // "Various Artists" credits a compilation, not a performer.
 export function isVariousArtistsCredit(
   name: string | null | undefined,

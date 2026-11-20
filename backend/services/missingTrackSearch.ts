@@ -9,7 +9,7 @@ import { libraryManager } from "./libraryManager.ts";
 import { albumIsOwned } from "./albumOwnership.ts";
 import { albumMediaCondition } from "./libraryQueryService.ts";
 import { logger } from "./logger.ts";
-import { isUnknownTitle } from "./trackMatching/titleText.ts";
+import { isUnknownTitle, UNKNOWN_TITLE_WAIT_MS } from "./trackMatching/titleText.ts";
 import { asAppError } from "../../lib/errors.ts";
 import { releasedSince, utcDay } from "../../lib/releaseDate.ts";
 
@@ -83,13 +83,22 @@ const markSearchedStmt = db.prepare(`
 const jobActivityAt = (job: DownloadJob) =>
   Math.max(Number(job.createdAt) || 0, Number(job.startedAt) || 0, Number(job.completedAt) || 0);
 
+// A job for an "[unknown]" track never searches, so it holds no album back.
 const isActiveOrCancelled = (job: DownloadJob) =>
-  ACTIVE_JOB_STATUSES.has(job.status) || job.status === "cancelled";
+  !isUnknownTitle(job.trackName) &&
+  (ACTIVE_JOB_STATUSES.has(job.status) || job.status === "cancelled");
 
-function hasSearchableMissingTrack(album: CandidateAlbum, jobs: DownloadJob[]) {
+// An "[unknown]" track is never searched, but while MusicBrainz may still name
+// it, its album is due so the search reads the album's track list again.
+const awaitsName = (album: CandidateAlbum, track: { title: string | null }, now: number) =>
+  isUnknownTitle(track.title) && releasedSince(album.releaseDate, now - UNKNOWN_TITLE_WAIT_MS, now);
+
+function hasSearchableMissingTrack(album: CandidateAlbum, jobs: DownloadJob[], now: number) {
   return missingTracksStmt.all(album.id).some((track) => {
-    if (isUnknownTitle(track.title)) return false;
-    const latestJob = jobs.filter((job) => jobMatchesTrack(job, track)).at(-1);
+    if (isUnknownTitle(track.title)) return awaitsName(album, track, now);
+    const latestJob = jobs
+      .filter((job) => jobMatchesTrack(job, track) && !isUnknownTitle(job.trackName))
+      .at(-1);
     return latestJob?.status !== "blocked";
   });
 }
@@ -101,32 +110,43 @@ function selectDueAlbums() {
   const jobsForAlbum = indexAlbumJobs(
     albums.flatMap((album) => [album.releaseGroupMbid, album.mbid]),
   );
-  const candidates = albums
+  return albums
     .map((album) => {
       const jobs = jobsForAlbum([album.releaseGroupMbid, album.mbid]);
       const lastActivityAt = Math.max(
         Number(album.lastSearchedAt) || 0,
-        ...jobs.map(jobActivityAt),
+        ...jobs.filter((job) => !isUnknownTitle(job.trackName)).map(jobActivityAt),
       );
       return { album, jobs, lastActivityAt };
     })
     .filter(
-      ({ album, jobs, lastActivityAt }) =>
-        (lastActivityAt <= dueBefore ||
-          releasedSince(album.releaseDate, Math.max(lastActivityAt, album.addedAt), now)) &&
-        !jobs.some(isActiveOrCancelled),
+      ({ album, lastActivityAt }) =>
+        lastActivityAt <= dueBefore ||
+        releasedSince(album.releaseDate, Math.max(lastActivityAt, album.addedAt), now),
     )
     .sort(
       (left, right) => left.lastActivityAt - right.lastActivityAt || left.album.id - right.album.id,
-    );
-  return candidates
-    .filter(({ album, jobs }) => hasSearchableMissingTrack(album, jobs))
-    .map(({ album }) => album);
+    )
+    .flatMap(({ album, jobs }) => {
+      if (!jobs.some(isActiveOrCancelled)) {
+        return hasSearchableMissingTrack(album, jobs, now)
+          ? [{ album, newlyNamedOnly: false }]
+          : [];
+      }
+      // A cancelled album waits for Retry. Downloads in progress only hold
+      // back its search, so the tracks MusicBrainz names are still queued.
+      if (jobs.some((job) => job.status === "cancelled" && !isUnknownTitle(job.trackName)))
+        return [];
+      const waiting = missingTracksStmt
+        .all(album.id)
+        .some((track) => awaitsName(album, track, now));
+      return waiting ? [{ album, newlyNamedOnly: true }] : [];
+    });
 }
 
-async function searchAlbumMissingTracks(album: CandidateAlbum) {
+async function searchAlbumMissingTracks(album: CandidateAlbum, newlyNamedOnly: boolean) {
   try {
-    const result = await libraryManager.searchAlbumMissingTracks(album.id);
+    const result = await libraryManager.searchAlbumMissingTracks(album.id, { newlyNamedOnly });
     if (result?.error) {
       logger.warn("library", "Missing-track search could not search an album", {
         albumId: album.id,
@@ -153,6 +173,8 @@ async function searchAlbumMissingTracks(album: CandidateAlbum) {
 export async function runMissingTrackSearch() {
   if (!isAnyDownloadSourceConfigured()) return 0;
   const dueAlbums = selectDueAlbums();
-  for (const album of dueAlbums) await searchAlbumMissingTracks(album);
+  for (const { album, newlyNamedOnly } of dueAlbums) {
+    await searchAlbumMissingTracks(album, newlyNamedOnly);
+  }
   return dueAlbums.length;
 }

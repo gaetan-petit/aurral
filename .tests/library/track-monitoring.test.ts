@@ -329,6 +329,31 @@ test("downloading a missing track in a read-only album leaves the download to th
   assert.equal(trackMonitored(requireFixture(tracks[0]).id), 1);
 });
 
+test("asking for a track MusicBrainz still titles [unknown] says so, monitors it, and queues nothing", async () => {
+  const { album, albumMbid, artist, tracks } = await createAlbum({ tracks: ["missing"] });
+  const track = requireFixture(tracks[0]);
+  db.prepare("UPDATE library_tracks SET title = '[unknown]' WHERE id = ?").run(track.id);
+  await libraryManager.setTrackMonitoring(track.id, { monitored: false });
+
+  const result = await requestLibraryTrack(
+    {
+      artistName: artist.name,
+      trackName: "[unknown]",
+      albumName: album.title,
+      albumMbid,
+      trackMbid: track.mbid,
+    },
+    { libraryTrackId: track.id },
+  );
+
+  assert.deepEqual(result, {
+    error: "MusicBrainz doesn't have this track's title yet",
+    statusCode: 409,
+  });
+  assert.equal(trackMonitored(track.id), 1);
+  assert.deepEqual(albumJobs(albumMbid), []);
+});
+
 test("requesting a guest track retains canonical album ownership for acquisition", async () => {
   const { artist, album, albumMbid, tracks } = await createAlbum();
   const track = requireFixture(tracks[0]);

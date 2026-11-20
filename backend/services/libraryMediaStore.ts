@@ -7,6 +7,7 @@ import { invalidateLibraryManagementCache } from "./libraryManagementStore.ts";
 import { getLibraryIndexLastModified, invalidateLibraryQueryCache } from "./libraryQueryService.ts";
 import {
   isSilenceTrack,
+  isUnknownTitle,
   isVariousArtistsCredit,
   withoutRemasterLabel,
 } from "./trackMatching/titleText.ts";
@@ -1656,7 +1657,7 @@ type LibraryAlbumFile = Pick<LibraryTracksRow, "mbid" | "title">;
 
 // A release's track stands for its recording and the ones MusicBrainz merged
 // into it.
-const releaseRecordings = (track: ReleaseTrack) =>
+export const releaseRecordings = (track: ReleaseTrack) =>
   [track?.recordingId || track?.id, ...(track?.oldRecordingIds || [])]
     .map(normalizeText)
     .filter(Boolean);
@@ -1739,6 +1740,13 @@ export function chooseLibraryAlbumRelease(
 // title of a song the release lists once. The rest are added as missing, and
 // an untagged copy then folds into its track. Missing tracks download only
 // once someone asks for them. A "[silence]" place is never missing.
+const renameTrackStmt = db.prepare<[string, number, number]>(
+  "UPDATE library_tracks SET title = ?, updated_at = ? WHERE id = ?",
+);
+const trackByIdentityStmt = db.prepare<[string | null], LibraryTracksRow>(
+  "SELECT * FROM library_tracks WHERE identity_key = ?",
+);
+
 export function storeLibraryAlbumTrackList(
   albumId: number,
   {
@@ -1795,20 +1803,27 @@ export function storeLibraryAlbumTrackList(
       return songs.get(songKey(track.title))!.length === 1 && named.length === 1 ? named[0] : null;
     });
     fill((track) => unused.find(recorded(track)));
+    let renamed = false;
+    // A song MusicBrainz listed as "[unknown]" takes the title it names it
+    // with later. Any other title stays, as a file's tags may have set it.
+    const nameUnknown = (row: Pick<LibraryTracksRow, "id" | "title">, title: string) => {
+      if (!isUnknownTitle(row.title) || isUnknownTitle(title)) return;
+      renameTrackStmt.run(title, now(), row.id);
+      renamed = true;
+    };
     const recordings = [];
     for (const [index, track] of tracks.entries()) {
       const have = places[index];
+      if (have) nameUnknown(have, track.title);
       if (have || isSilenceTrack(track.title)) {
         recordings.push(have?.mbid || track.mbid);
         continue;
       }
       const key = buildIdentityKey("recording", track.mbid);
+      const known = trackByIdentityStmt.get(key);
+      if (known) nameUnknown(known, track.title);
       const row =
-        db
-          .prepare<[string | null], LibraryTracksRow>(
-            "SELECT * FROM library_tracks WHERE identity_key = ?",
-          )
-          .get(key) ||
+        known ||
         upsertLibraryTrack({
           identityKey: key,
           mbid: track.mbid,
@@ -1843,7 +1858,7 @@ export function storeLibraryAlbumTrackList(
       now(),
       album.id,
     );
-    return { retitled: Boolean(title) && title !== album.title, albumId: album.id };
+    return { retitled: (Boolean(title) && title !== album.title) || renamed, albumId: album.id };
   })();
   if (stored && stored.retitled) syncLibrarySearchAlbumAndTracks(stored.albumId);
   if (stored) invalidateLibraryCache();

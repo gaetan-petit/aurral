@@ -4,6 +4,7 @@ import { isRecord } from "../../../lib/isRecord.ts";
 import { UUID_REGEX } from "../../../lib/uuid.ts";
 import { http, isTransientNetworkError } from "../../../lib/http.ts";
 import { asAppError } from "../../../lib/errors.ts";
+import { releasedSince } from "../../../lib/releaseDate.ts";
 import createCache from "../apiClients/simpleCache.ts";
 import createRateLimiter from "../apiClients/rateLimiter.ts";
 import { dbOps } from "../../db/helpers/index.ts";
@@ -44,6 +45,8 @@ import {
 import {
   coreAlbumTitle,
   isSilenceTrack,
+  isUnknownTitle,
+  UNKNOWN_TITLE_WAIT_MS,
   withoutFeaturedArtists,
 } from "../trackMatching/titleText.ts";
 import {
@@ -166,6 +169,7 @@ interface AlbumSearchItem {
 interface MetadataRequestOptions {
   signal?: AbortSignal;
   forceRefresh?: boolean;
+  waitWhenStale?: boolean;
   withFallbackReleases?: boolean | "required";
 }
 
@@ -178,6 +182,7 @@ interface MetadataError extends Error {
 
 const METADATA_ENTITY_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60;
 const INCOMPLETE_ALBUM_CACHE_TTL_SECONDS = 60 * 60;
+const PROVISIONAL_ALBUM_CACHE_TTL_SECONDS = 24 * 60 * 60;
 const METADATA_ENTITY_STALE_TTL_SECONDS = 30 * 24 * 60 * 60;
 const METADATA_SEARCH_CACHE_TTL_SECONDS = 24 * 60 * 60;
 const FRESH_RELEASES_PATH = "/v1/fresh-releases";
@@ -365,15 +370,35 @@ function isRetryable(error: unknown) {
   );
 }
 
+// MusicBrainz still fills in a recent album that lists "[unknown]" tracks, so
+// it is read again after a day instead of a week.
+const listsUnknownTrack = (releases: unknown[]) =>
+  releases.some(
+    (release) =>
+      isRecord(release) &&
+      Array.isArray(release.tracks) &&
+      release.tracks.some((track) => isRecord(track) && isUnknownTitle(track.title)),
+  );
+
+function albumCacheTtlSeconds(value: unknown) {
+  if (!isRecord(value)) return METADATA_ENTITY_CACHE_TTL_SECONDS;
+  if (!Array.isArray(value.releases) || value.releases.length === 0)
+    return INCOMPLETE_ALBUM_CACHE_TTL_SECONDS;
+  const recent = releasedSince(
+    typeof value.releaseDate === "string" ? value.releaseDate : null,
+    Date.now() - UNKNOWN_TITLE_WAIT_MS,
+  );
+  return recent && listsUnknownTrack(value.releases)
+    ? PROVISIONAL_ALBUM_CACHE_TTL_SECONDS
+    : METADATA_ENTITY_CACHE_TTL_SECONDS;
+}
+
 function getMetadataCachePolicy(path: string, value?: unknown) {
   if (isEntityMetadataPath(path)) {
     return {
-      freshTtlSeconds:
-        isAlbumMetadataPath(path) &&
-        isRecord(value) &&
-        (!Array.isArray(value.releases) || value.releases.length === 0)
-          ? INCOMPLETE_ALBUM_CACHE_TTL_SECONDS
-          : METADATA_ENTITY_CACHE_TTL_SECONDS,
+      freshTtlSeconds: isAlbumMetadataPath(path)
+        ? albumCacheTtlSeconds(value)
+        : METADATA_ENTITY_CACHE_TTL_SECONDS,
       staleTtlSeconds: METADATA_ENTITY_STALE_TTL_SECONDS,
     };
   }
@@ -608,6 +633,7 @@ async function request<Schema extends v.GenericSchema>(
   {
     signal,
     forceRefresh = false,
+    waitWhenStale = false,
     cacheNotFound = true,
   }: MetadataRequestOptions & { cacheNotFound?: boolean } = {},
 ): Promise<v.InferOutput<Schema>> {
@@ -617,7 +643,7 @@ async function request<Schema extends v.GenericSchema>(
     throw createMetadataNotFoundError();
   }
   const cached = await readCachedMetadata(cacheKey, schema);
-  if (cached && !forceRefresh) {
+  if (cached && !forceRefresh && !(waitWhenStale && cached.stale)) {
     if (cached.stale) {
       void refreshMetadata(schema, cacheKey, path, params, {
         fallbackValue: cached.value,
@@ -631,7 +657,7 @@ async function request<Schema extends v.GenericSchema>(
   return refreshMetadata(schema, cacheKey, path, params, {
     signal,
     cacheNotFound,
-    ...(cached && { fallbackValue: cached.value }),
+    ...(cached && { fallbackValue: cached.value, revalidating: waitWhenStale }),
   });
 }
 
@@ -964,7 +990,12 @@ async function getMusicbrainzAlbumFallback(
 
 export async function getAlbumByMbid(
   albumMbid: string,
-  { signal, forceRefresh = false, withFallbackReleases = false }: MetadataRequestOptions = {},
+  {
+    signal,
+    forceRefresh = false,
+    waitWhenStale = false,
+    withFallbackReleases = false,
+  }: MetadataRequestOptions = {},
 ) {
   const cacheKey = `${getMetadataBaseUrl()}/v1/album/${albumMbid}:{}`;
   const filled = forceRefresh ? null : musicbrainzAlbumFallbackCache.get(albumMbid);
@@ -977,7 +1008,7 @@ export async function getAlbumByMbid(
         albumSchema,
         `/v1/album/${albumMbid}`,
         {},
-        { signal, forceRefresh, cacheNotFound: !UUID_REGEX.test(albumMbid) },
+        { signal, forceRefresh, waitWhenStale, cacheNotFound: !UUID_REGEX.test(albumMbid) },
       );
       if (forceRefresh) musicbrainzFallbackErrors.delete(cacheKey);
       album = toNormalizedAlbum(data);
