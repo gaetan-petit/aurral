@@ -4,6 +4,7 @@ import { requireAuth, requireUserAccount } from "../../../middleware/guards.ts";
 import type { AppEnv } from "../../../middleware/requestUser.ts";
 import { validate } from "../../../middleware/validate.ts";
 import { SPOTIFY_IMPORT_MAX_ARTISTS } from "../../../../lib/spotifyExport.ts";
+import { forgetUserMixes } from "../../../services/discovery/mixes.ts";
 import { requestUserDiscoveryRefresh } from "../../../services/discovery/userRefreshRequests.ts";
 import {
   clearSpotifyImport,
@@ -32,8 +33,10 @@ const importInput = v.object({
   ),
 });
 
-const refresh = (userId: number) =>
+const refresh = (userId: number) => {
+  forgetUserMixes(userId);
   requestUserDiscoveryRefresh(userId, { reason: "spotify_import", delaySeconds: 0 });
+};
 
 export default new Hono<AppEnv>()
   .get("/spotify-import", requireAuth, requireUserAccount, (c) =>

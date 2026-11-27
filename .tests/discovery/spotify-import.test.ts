@@ -10,15 +10,23 @@ import {
   setupIsolatedBackend,
 } from "../helpers/backendTestHarness.ts";
 
-const [state, { db }, { dbOps, userOps }, discovery, { getUserDiscovery }, { api }] =
-  await setupIsolatedBackend(
-    "spotify-import",
-    () => import("../../backend/config/db-sqlite.ts"),
-    () => import("../../backend/db/helpers/index.ts"),
-    () => import("../../backend/services/discovery/index.ts"),
-    () => import("../../backend/services/discovery/userDiscovery.ts"),
-    () => import("../../backend/routes/api.ts"),
-  );
+const [
+  state,
+  { db },
+  { dbOps, userOps },
+  discovery,
+  { getUserDiscovery },
+  { api },
+  { getUserMixes },
+] = await setupIsolatedBackend(
+  "spotify-import",
+  () => import("../../backend/config/db-sqlite.ts"),
+  () => import("../../backend/db/helpers/index.ts"),
+  () => import("../../backend/services/discovery/index.ts"),
+  () => import("../../backend/services/discovery/userDiscovery.ts"),
+  () => import("../../backend/routes/api.ts"),
+  () => import("../../backend/services/discovery/mixes.ts"),
+);
 
 type ImportRoute = ReturnType<typeof hc<typeof discoveryApp>>["discover"]["spotify-import"];
 type ImportBody = InferRequestType<ImportRoute["$put"]>["json"];
@@ -91,8 +99,11 @@ test("an imported Spotify history seeds discovery until it is removed", async ()
     ["Slowdive", "spotify"],
   ]);
 
+  const mixes = await getUserMixes(userId);
+  assert.equal(await getUserMixes(userId), mixes);
   await request("PUT", { artists: [{ ...artist, name: "Beach House", score: 5 }] });
   assert.equal((await request("GET"))?.artists, 1);
+  assert.notEqual(await getUserMixes(userId), mixes);
 
   assert.equal(await request("DELETE"), null);
   assert.equal(await request("GET"), null);

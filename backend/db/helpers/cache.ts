@@ -54,6 +54,7 @@ export interface CacheOps {
   ) => { artistNameKey: string; mbid: string | null; updatedAt: number } | null;
   cleanOldMusicbrainzArtistMbidCache: (maxAgeDays?: number) => Database.RunResult;
   getMetadataResponseAsync: (cacheKey: string) => Promise<MetadataResponseEntry | null>;
+  getMetadataResponsesAsync: (cacheKeys: string[]) => Promise<Map<string, MetadataResponseEntry>>;
   setMetadataResponseAsync: (cacheKey: string, entry: MetadataResponseEntry) => Promise<void>;
   deleteMetadataResponse: (cacheKey: string) => Database.RunResult;
   clearMetadataResponses: () => Database.RunResult;
@@ -81,6 +82,14 @@ const cleanOldImagesStmt = db.prepare<[number]>("DELETE FROM images_cache WHERE 
 
 const NOT_FOUND_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const getImagesStmtsByCount = new Map<number, Database.Statement<string[], ImageSummaryRow>>();
+type MetadataResponsesRow = Pick<
+  MetadataResponseCacheRow,
+  "cache_key" | "response" | "fresh_until" | "stale_until"
+>;
+const getMetadataResponsesStmtsByCount = new Map<
+  number,
+  Database.Statement<string[], MetadataResponsesRow>
+>();
 
 const parseImages = (value: string | null) =>
   dbHelpers.readJSON(listOf(cachedArtistImageSchema), value, "artist image cache");
@@ -231,9 +240,10 @@ export default function register(dbOps: CacheOps) {
     return cleanOldMusicbrainzArtistMbidCacheStmt.run(cutoff);
   };
 
-  dbOps.getMetadataResponseAsync = async function (cacheKey) {
-    const row = getMetadataResponseStmt.get(cacheKey);
-    if (!row) return null;
+  const readMetadataResponse = async (
+    cacheKey: string,
+    row: Pick<MetadataResponseCacheRow, "response" | "fresh_until" | "stale_until">,
+  ): Promise<MetadataResponseEntry | null> => {
     if (row.stale_until < Date.now()) {
       deleteMetadataResponseStmt.run(cacheKey);
       return null;
@@ -248,6 +258,32 @@ export default function register(dbOps: CacheOps) {
       deleteMetadataResponseStmt.run(cacheKey);
       return null;
     }
+  };
+
+  dbOps.getMetadataResponseAsync = async function (cacheKey) {
+    const row = getMetadataResponseStmt.get(cacheKey);
+    return row ? readMetadataResponse(cacheKey, row) : null;
+  };
+
+  dbOps.getMetadataResponsesAsync = async function (cacheKeys) {
+    const found = new Map<string, MetadataResponseEntry>();
+    if (!cacheKeys.length) return found;
+    let stmt = getMetadataResponsesStmtsByCount.get(cacheKeys.length);
+    if (!stmt) {
+      stmt = db.prepare<string[], MetadataResponsesRow>(
+        `SELECT cache_key, response, fresh_until, stale_until FROM metadata_response_cache
+         WHERE cache_key IN (${cacheKeys.map(() => "?").join(",")})`,
+      );
+      getMetadataResponsesStmtsByCount.set(cacheKeys.length, stmt);
+    }
+    await Promise.all(
+      stmt.all(...cacheKeys).map(async ({ cache_key: cacheKey, ...row }) => {
+        if (!cacheKey) return;
+        const entry = await readMetadataResponse(cacheKey, row);
+        if (entry) found.set(cacheKey, entry);
+      }),
+    );
+    return found;
   };
 
   dbOps.setMetadataResponseAsync = async function (cacheKey, { value, freshUntil, staleUntil }) {

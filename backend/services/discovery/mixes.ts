@@ -1,9 +1,13 @@
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import { db } from "../../config/db-sqlite.ts";
+import type { LibraryArtistsRow } from "../../db/rows.ts";
 import BoundedMap from "../boundedMap.ts";
-import { buildRadio } from "../radio.ts";
+import { PLAY_HALF_LIFE_MS } from "../../../lib/spotifyExport.ts";
+import { getSpotifyImportPlayWeights } from "../spotify/spotifyImport.ts";
+import { buildRadio, radioPicks } from "../radio.ts";
 import { matchesArtistKeys } from "../../../lib/artistMatch.ts";
 import { getBlockedArtistKeys } from "./feedback.ts";
+import { DAILY_SEED_ARTISTS, dailyMixGroups, genreGroups } from "./dailyMixGroups.ts";
 import {
   BLEND_MIX_PREFIX,
   FRIEND_BLEND_MIX_PREFIX,
@@ -15,7 +19,9 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const MIX_SIZE = 50;
 const MIN_MIX_TRACKS = 10;
 const DAILY_MIXES = 6;
-const DAILY_SEED_ARTISTS = 4;
+const MIN_DAILY_ARTISTS = 2;
+const MAX_REPEATED_ARTISTS = 0.5;
+const MAX_ALBUM_SHARE = 0.4;
 const TOP_ARTISTS = 30;
 const BEST_OF_ARTISTS = 3;
 const RADIO_MIXES = 3;
@@ -26,6 +32,7 @@ const PER_ARTIST = 3;
 const ON_REPEAT_MS = 30 * DAY_MS;
 const REWIND_MS = 365 * DAY_MS;
 const TOP_ARTIST_MS = 90 * DAY_MS;
+const WEEK_MS = 7 * DAY_MS;
 const CACHE_TTL_MS = 30 * 60 * 1000;
 const BLEND_CANDIDATES = 200;
 const BLEND_WINDOW = 1000;
@@ -49,12 +56,14 @@ type TrackPlays = {
   recent: number;
   rewind: number;
   season: number;
+  week: number;
+  weight: number;
   lastPlayedAt: number;
 };
 
 type Candidate = { trackId: number; artistId: number; artist: string; title: string };
 
-type LibraryArtist = { id: number; name: string };
+type LibraryArtist = Pick<LibraryArtistsRow, "id" | "name" | "mbid">;
 
 const AVAILABLE = `EXISTS (
   SELECT 1 FROM library_media_files AS media
@@ -80,9 +89,14 @@ const lowerForms = (text: string) => [
 const playKey = (artist: string, title: string) =>
   `${artist.trim().toLowerCase()}\0${title.trim().toLowerCase()}`;
 
-const playsStmt = db.prepare<[number, number, number, number, number, number], TrackPlays>(`
+const playsStmt = db.prepare<
+  [number, number, number, number, number, number, number, number, number],
+  TrackPlays
+>(`
   SELECT MIN(track_id) AS trackId, MIN(artist) AS artist, MIN(title) AS title,
          COUNT(*) AS total,
+         SUM(played_at >= ?) AS week,
+         SUM(power(0.5, (? - played_at) / ?)) AS weight,
          SUM(played_at >= ?) AS recent,
          SUM(played_at >= ? AND played_at < ?) AS rewind,
          SUM(played_at >= ?) AS season,
@@ -91,6 +105,19 @@ const playsStmt = db.prepare<[number, number, number, number, number, number], T
   WHERE user_id = ? AND played_at <= ?
   GROUP BY lower(artist), lower(title)
 `);
+
+const trackPlays = (userId: number, now: number) =>
+  playsStmt.all(
+    now - WEEK_MS,
+    now,
+    PLAY_HALF_LIFE_MS,
+    now - ON_REPEAT_MS,
+    now - REWIND_MS,
+    now - ON_REPEAT_MS,
+    now - TOP_ARTIST_MS,
+    userId,
+    now,
+  );
 
 const latestPlayStmt = db.prepare<[number], { id: number | null }>(
   "SELECT MAX(id) AS id FROM play_events WHERE user_id = ?",
@@ -217,25 +244,15 @@ function ranked(
   return [...new Set(ids)].slice(0, MIX_SIZE);
 }
 
-function topLibraryArtists(plays: TrackPlays[]) {
-  const totals = new Map<string, { recent: number; season: number; total: number }>();
-  for (const play of plays) {
-    const key = play.artist.trim().toLowerCase();
-    const entry = totals.get(key) ?? { recent: 0, season: 0, total: 0 };
-    entry.recent += play.recent;
-    entry.season += play.season;
-    entry.total += play.total;
-    totals.set(key, entry);
-  }
-  const names = [...totals.entries()]
-    .sort(([, left], [, right]) => right.season - left.season || right.total - left.total)
-    .slice(0, TOP_ARTISTS * 2)
-    .map(([key]) => key);
-  if (!names.length) return { artists: [], playsByArtist: totals };
+const nameKey = (name: string) => name.trim().toLowerCase();
+
+function libraryArtists(spellings: Map<string, string>) {
+  if (!spellings.size) return new Map<string, LibraryArtist>();
+  const names = [...new Set([...spellings.keys(), ...spellings.values()])];
   const rows = db
-    .prepare<string[], LibraryArtist & { key: string }>(
-      `SELECT artist.id, artist.name, lower(artist.name) AS key FROM library_artists AS artist
-       WHERE lower(artist.name) IN (${placeholders(names)})
+    .prepare<string[], LibraryArtist>(
+      `SELECT artist.id, artist.name, artist.mbid FROM library_artists AS artist
+       WHERE artist.name COLLATE NOCASE IN (${placeholders(names)})
          AND EXISTS (
            SELECT 1 FROM library_albums AS album
            JOIN library_album_tracks AS link ON link.album_id = album.id
@@ -244,55 +261,82 @@ function topLibraryArtists(plays: TrackPlays[]) {
          )`,
     )
     .all(...names);
-  const byKey = new Map(rows.map((row) => [row.key, row]));
-  const artists = names.flatMap((name) => {
-    const row = byKey.get(name);
-    return row ? [{ id: row.id, name: row.name }] : [];
-  });
-  return { artists: artists.slice(0, TOP_ARTISTS), playsByArtist: totals };
+  return new Map(rows.map((row) => [nameKey(row.name), row]));
 }
 
-function artistGenres(artistIds: number[]) {
-  const genres = new Map<number, Set<string>>();
-  if (!artistIds.length) return genres;
-  const rows = db
-    .prepare<number[], { artistId: number; genre: string }>(
-      `SELECT entity_id AS artistId, genre_key AS genre FROM library_entity_genres
-       WHERE entity_kind = 'artists' AND entity_id IN (${placeholders(artistIds)})
-       UNION
-       SELECT album.artist_id, genres.genre_key FROM library_entity_genres AS genres
-       JOIN library_albums AS album ON album.id = genres.entity_id
-       WHERE genres.entity_kind = 'albums' AND album.artist_id IN (${placeholders(artistIds)})`,
-    )
-    .all(...artistIds, ...artistIds);
-  for (const row of rows) {
-    genres.set(row.artistId, (genres.get(row.artistId) ?? new Set()).add(row.genre));
+function topLibraryArtists(plays: TrackPlays[], imported: { artist: string; weight: number }[]) {
+  const totals = new Map<
+    string,
+    { recent: number; season: number; week: number; total: number; weight: number }
+  >();
+  const spellings = new Map<string, string>();
+  for (const play of plays) {
+    const key = nameKey(play.artist);
+    if (!spellings.has(key)) spellings.set(key, play.artist.trim());
+    const entry = totals.get(key) ?? { recent: 0, season: 0, week: 0, total: 0, weight: 0 };
+    entry.recent += play.recent;
+    entry.season += play.season;
+    entry.week += play.week;
+    entry.total += play.total;
+    entry.weight += play.weight;
+    totals.set(key, entry);
   }
-  return genres;
+  const importedPlays = new Map<string, number>();
+  for (const row of imported) {
+    const key = nameKey(row.artist);
+    if (!spellings.has(key)) spellings.set(key, row.artist.trim());
+    importedPlays.set(key, (importedPlays.get(key) ?? 0) + row.weight);
+  }
+  const allKeys = [...spellings.keys()];
+  const season = (key: string) => totals.get(key)?.season ?? 0;
+  const total = (key: string) => totals.get(key)?.total ?? 0;
+  const windows = [
+    (key: string) => totals.get(key)?.week ?? 0,
+    season,
+    (key: string) => (totals.get(key)?.weight ?? 0) + (importedPlays.get(key) ?? 0),
+  ].map((value) => ({ value, top: allKeys.reduce((best, key) => Math.max(best, value(key)), 0) }));
+  const dailyScore = new Map(
+    allKeys.map((key) => [
+      key,
+      windows.reduce((sum, { value, top }) => sum + (top > 0 ? value(key) / top : 0), 0),
+    ]),
+  );
+  const daily = (key: string) => dailyScore.get(key) ?? 0;
+  const topKeys = (keys: string[], rank: (key: string) => number) =>
+    keys
+      .sort((left, right) => rank(right) - rank(left) || total(right) - total(left))
+      .slice(0, TOP_ARTISTS * 2);
+  const seasonKeys = topKeys([...totals.keys()], season);
+  const dailyKeys = topKeys(
+    allKeys.filter((key) => daily(key) > 0),
+    daily,
+  );
+  const library = libraryArtists(
+    new Map([...seasonKeys, ...dailyKeys].map((key) => [key, spellings.get(key) ?? key])),
+  );
+  const inLibrary = (keys: string[]) =>
+    keys.flatMap((key) => library.get(key) ?? []).slice(0, TOP_ARTISTS);
+  return {
+    artists: inLibrary(seasonKeys),
+    dailyArtists: inLibrary(dailyKeys),
+    playsByArtist: totals,
+  };
 }
 
-function clusterArtists(artists: LibraryArtist[]) {
-  const genres = artistGenres(artists.map((artist) => artist.id));
-  const weights = new Map<string, number>();
-  for (const [rank, artist] of artists.entries()) {
-    for (const genre of genres.get(artist.id) ?? []) {
-      weights.set(genre, (weights.get(genre) ?? 0) + 1 / (rank + 1));
-    }
-  }
-  const assigned = new Set<number>();
-  const clusters: LibraryArtist[][] = [];
-  for (const [genre] of [...weights].sort(([, left], [, right]) => right - left)) {
-    if (clusters.length >= DAILY_MIXES) break;
-    const members = artists.filter(
-      (artist) => !assigned.has(artist.id) && genres.get(artist.id)?.has(genre),
-    );
-    if (members.length < 2) continue;
-    const seeds = members.slice(0, DAILY_SEED_ARTISTS);
-    for (const artist of seeds) assigned.add(artist.id);
-    clusters.push(seeds);
-  }
-  if (!clusters.length && artists.length) clusters.push(artists.slice(0, DAILY_SEED_ARTISTS));
-  return clusters;
+function isVariedDailyMix(
+  picks: { artistId: number; albumId: number }[],
+  inDailyMixes: Set<number>,
+) {
+  const artistIds = new Set(picks.map((pick) => pick.artistId));
+  const albumTracks = new Map<number, number>();
+  for (const { albumId } of picks) albumTracks.set(albumId, (albumTracks.get(albumId) ?? 0) + 1);
+  const repeated = [...artistIds].filter((artistId) => inDailyMixes.has(artistId)).length;
+  return (
+    picks.length >= MIN_MIX_TRACKS &&
+    artistIds.size >= MIN_DAILY_ARTISTS &&
+    Math.max(...albumTracks.values()) <= picks.length * MAX_ALBUM_SHARE &&
+    repeated < artistIds.size * MAX_REPEATED_ARTISTS
+  );
 }
 
 const listNames = (names: string[]) =>
@@ -304,45 +348,57 @@ const decadeName = (decade: number) =>
 async function buildMixes(userId: number, now: number): Promise<Mix[]> {
   const day = Math.floor(now / DAY_MS);
   const random = (id: string) => seededRandom(`${userId}:${day}:${id}`);
-  const plays = playsStmt.all(
-    now - ON_REPEAT_MS,
-    now - REWIND_MS,
-    now - ON_REPEAT_MS,
-    now - TOP_ARTIST_MS,
-    userId,
-    now,
-  );
+  const plays = trackPlays(userId, now);
   const played = new Map(plays.map((play) => [playKey(play.artist, play.title), play]));
-  const { artists, playsByArtist } = topLibraryArtists(plays);
+  const { artists, dailyArtists, playsByArtist } = topLibraryArtists(
+    plays,
+    getSpotifyImportPlayWeights(userId, now, TOP_ARTISTS * 2),
+  );
   const artistWeight = (candidate: Candidate) => {
     const entry = playsByArtist.get(candidate.artist);
     return 1 + Math.log1p(entry ? entry.season || entry.total : 0);
   };
 
   const mixes: Mix[] = [];
-  const noSimilarArtists = async () => [];
-  for (const [index, seeds] of clusterArtists(artists).entries()) {
-    const id = `daily-${index + 1}`;
+  const blocked = getBlockedArtistKeys(userId);
+  const seedable = dailyArtists.filter((artist) => !matchesArtistKeys(artist, blocked));
+  const { similarGroups, similarTo } = await dailyMixGroups(userId, seedable);
+  const inDailyMixes = new Set<number>();
+  let daily = 0;
+  const addDailyMix = async (seeds: LibraryArtist[]) => {
+    if (daily >= DAILY_MIXES) return;
+    const id = `daily-${daily + 1}`;
     await yieldToEventLoop();
-    const trackIds = await buildRadio({
+    const picks = await radioPicks({
       userId,
       seed: { artists: seeds.map((artist) => ({ id: String(artist.id) })) },
       limit: MIX_SIZE,
       random: random(id),
       now,
-      similarArtists: noSimilarArtists,
+      similarArtists: similarTo,
+      fill: false,
     });
+    if (!isVariedDailyMix(picks, inDailyMixes)) return;
+    for (const pick of picks) inDailyMixes.add(pick.artistId);
+    daily += 1;
     mixes.push({
       id,
-      name: `Daily Mix ${index + 1}`,
+      name: `Daily Mix ${daily}`,
       description: listNames(seeds.map((artist) => artist.name)),
-      trackIds,
+      trackIds: picks.map((pick) => pick.trackId),
       artistId: seeds[0]?.id,
     });
+  };
+  for (const seeds of similarGroups) await addDailyMix(seeds);
+  const ungrouped = seedable.filter((artist) => !inDailyMixes.has(artist.id));
+  const byGenre = daily < DAILY_MIXES ? genreGroups(ungrouped) : [];
+  if (!daily && !byGenre.length && ungrouped.length) {
+    byGenre.push(ungrouped.slice(0, DAILY_SEED_ARTISTS));
   }
+  for (const seeds of byGenre) await addDailyMix(seeds);
 
   const recentPlays = (artist: LibraryArtist) =>
-    playsByArtist.get(artist.name.trim().toLowerCase())?.recent ?? 0;
+    playsByArtist.get(nameKey(artist.name))?.recent ?? 0;
   const radioSeeds = artists
     .filter((artist) => recentPlays(artist) > 0)
     .sort((left, right) => recentPlays(right) - recentPlays(left))
@@ -554,8 +610,7 @@ function closestPartners(userId: number, partners: Partner[], now: number) {
 }
 
 function blendFavorites(userId: number, now: number, blocked: Set<string>): Favorite[] {
-  return playsStmt
-    .all(now - ON_REPEAT_MS, now - REWIND_MS, now - ON_REPEAT_MS, now - TOP_ARTIST_MS, userId, now)
+  return trackPlays(userId, now)
     .filter((play) => !matchesArtistKeys({ name: play.artist }, blocked))
     .map((play) => ({ play, weight: 2 * Math.log1p(play.season) + Math.log1p(play.total) }))
     .sort((left, right) => right.weight - left.weight)
@@ -593,6 +648,8 @@ function friendFavorites(friend: FriendTracks, blocked: Set<string>): Favorite[]
       recent: 0,
       rewind: 0,
       season: 0,
+      week: 0,
+      weight: 0,
       lastPlayedAt: 0,
     }));
   const resolved = resolvePlays(plays);
@@ -851,6 +908,10 @@ export async function getUserMix(userId: number, id: string, now = Date.now()) {
       : ((await blendsWith(userId, [{ person }], now)).mixes[0] ?? null);
   }
   return (await getOwnMixes(userId, now)).find((mix) => mix.id === id) ?? null;
+}
+
+export function forgetUserMixes(userId: number) {
+  cache.delete(userId);
 }
 
 export function clearUserMixes() {

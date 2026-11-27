@@ -9,7 +9,7 @@ const MIN_SHARED = 2;
 const nameKey = (name: string) => name.trim().toLowerCase();
 
 // Reads stored Discover data only and never sends a request.
-export function discoverSimilarArtists(userId: number) {
+export function discoverLinks(userId: number) {
   const { recommendations } = dbOps.getDiscoveryCache(getUserDiscoveryNamespace(userId));
   const neighbors = new Map<string, Set<string>>();
   const spellings = new Map<string, string>();
@@ -28,11 +28,15 @@ export function discoverSimilarArtists(userId: number) {
     const smaller = Math.min(ofLeft.size, ofRight.size);
     return shared >= Math.max(MIN_SHARED, SIMILAR_OVERLAP * smaller) ? shared / smaller : 0;
   };
-  return (name: string): SimilarArtist[] => {
-    const key = nameKey(name);
-    return [...neighbors.keys()].flatMap((other) => {
-      const score = match(key, other);
-      return score ? [{ mbid: null, name: spellings.get(other) ?? other, match: score }] : [];
-    });
+  return {
+    has: (name: string) => neighbors.has(nameKey(name)),
+    linked: (left: string, right: string) => match(nameKey(left), nameKey(right)) > 0,
+    similarTo: (name: string): SimilarArtist[] => {
+      const key = nameKey(name);
+      return [...neighbors.keys()].flatMap((other) => {
+        const score = match(key, other);
+        return score ? [{ mbid: null, name: spellings.get(other) ?? other, match: score }] : [];
+      });
+    },
   };
 }

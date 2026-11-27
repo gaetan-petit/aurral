@@ -763,13 +763,15 @@ async function getMusicbrainzArtistFallback(
   }
 }
 
+const artistCacheKey = (mbid: string) => `${getMetadataBaseUrl()}/v1/artist/${mbid}:{}`;
+
 export async function getArtistByMbid(
   mbid: string,
   { signal, forceRefresh = false }: MetadataRequestOptions = {},
 ) {
   const filled = forceRefresh ? null : musicbrainzArtistFallbackCache.get(mbid);
   if (filled) return filled;
-  const cacheKey = `${getMetadataBaseUrl()}/v1/artist/${mbid}:{}`;
+  const cacheKey = artistCacheKey(mbid);
   try {
     const data = await request(
       artistDetailSchema,
@@ -791,12 +793,32 @@ export async function getArtistByMbid(
 }
 
 export async function getCachedArtistByMbid(mbid: string) {
-  const cached = await readCachedMetadata(
-    `${getMetadataBaseUrl()}/v1/artist/${mbid}:{}`,
-    artistDetailSchema,
-  );
+  const cached = await readCachedMetadata(artistCacheKey(mbid), artistDetailSchema);
   if (cached) return toNormalizedArtist(cached.value);
   return musicbrainzArtistFallbackCache.get(mbid) ?? null;
+}
+
+// One query for every record the hot cache lacks. Reads the cache only and never fetches.
+// It doesn't fill the small hot cache, so bulk reads don't push out the pages users open.
+export async function getCachedArtistsByMbid(mbids: string[]) {
+  const keys = new Map([...new Set(mbids)].map((mbid) => [mbid, artistCacheKey(mbid)]));
+  const readHot = (cacheKey: string) =>
+    // A cache key always holds output of the same schema.
+    metadataHotCache.get(cacheKey) as
+      | CachedMetadata<v.InferOutput<typeof artistDetailSchema>>
+      | undefined;
+  const stored = await dbOps.getMetadataResponsesAsync(
+    [...keys.values()].filter((cacheKey) => !readHot(cacheKey)),
+  );
+  const now = Date.now();
+  const artists = new Map<string, ReturnType<typeof toNormalizedArtist>>();
+  for (const [mbid, cacheKey] of keys) {
+    const entry =
+      readHot(cacheKey) ??
+      readStoredMetadata(cacheKey, artistDetailSchema, stored.get(cacheKey) ?? null);
+    if (entry && entry.staleUntil >= now) artists.set(mbid, toNormalizedArtist(entry.value));
+  }
+  return artists;
 }
 
 function toNormalizedMusicbrainzRelease(raw: v.InferOutput<typeof musicbrainzReleaseSchema>) {

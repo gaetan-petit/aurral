@@ -3,9 +3,9 @@ import { isRecord } from "./isRecord.ts";
 export const SPOTIFY_IMPORT_MAX_ARTISTS = 5000;
 
 const MIN_PLAY_MS = 30_000;
-const HALF_LIFE_MS = 2 * 365 * 24 * 60 * 60 * 1000;
-const LIKED_TRACK_SCORE = 1;
-const FOLLOWED_SCORE = 3;
+export const PLAY_HALF_LIFE_MS = 2 * 365 * 24 * 60 * 60 * 1000;
+export const LIKED_TRACK_SCORE = 1;
+export const FOLLOWED_SCORE = 3;
 
 export type SpotifyImportArtist = {
   name: string;
@@ -102,7 +102,7 @@ export function spotifyExportTally(now = Date.now()) {
       for (const play of filePlays) {
         const artist = artistFor(play.artist);
         artist.plays += 1;
-        artist.score += 0.5 ** (Math.max(0, now - play.playedAt) / HALF_LIFE_MS);
+        artist.score += 0.5 ** (Math.max(0, now - play.playedAt) / PLAY_HALF_LIFE_MS);
         artist.firstPlayedAt = Math.min(artist.firstPlayedAt ?? play.playedAt, play.playedAt);
         artist.lastPlayedAt = Math.max(artist.lastPlayedAt ?? play.playedAt, play.playedAt);
       }

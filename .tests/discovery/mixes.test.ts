@@ -13,6 +13,9 @@ const [
   covers,
   operations,
   { requireImportList },
+  { dbOps },
+  { getMetadataBaseUrl },
+  { addDiscoveryFeedback },
 ] = await setupIsolatedBackend(
   "discovery-mixes",
   () => import("../../backend/config/db-sqlite.ts"),
@@ -22,14 +25,23 @@ const [
   () => import("../../backend/services/discovery/browseCovers.ts"),
   () => import("../../backend/services/playlists/playlistOperationQueue.ts"),
   () => import("../../backend/services/importLists/importPlaylist.ts"),
+  () => import("../../backend/db/helpers/index.ts"),
+  () => import("../../backend/services/providers/metadataProvider.ts"),
+  () => import("../../backend/services/discovery/feedback.ts"),
 );
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = Date.UTC(2026, 10, 5, 12);
 
-function addArtist(name: string, trackCount: number, genres: string[] = []) {
+function addArtist(
+  name: string,
+  trackCount: number,
+  genres: string[] = [],
+  mbid: string | null = null,
+) {
   const artist = store.upsertLibraryArtist({
     identityKey: `artist:${name}`,
+    mbid,
     name,
     metadata: genres.length ? { genres } : null,
   });
@@ -75,6 +87,18 @@ const artistOf = (trackId: number) =>
     )
     .get(trackId)!.name;
 
+const mbidOf = (name: string) => `mbid-${name.toLowerCase().replace(/[^a-z]/g, "")}`;
+const cacheSimilar = (name: string, similar: string[]) =>
+  dbOps.setMetadataResponseAsync(`${getMetadataBaseUrl()}/v1/artist/${mbidOf(name)}:{}`, {
+    value: {
+      id: mbidOf(name),
+      name,
+      similar: similar.map((other) => ({ id: mbidOf(other), name: other, score: 1 })),
+    },
+    freshUntil: Date.now() + DAY,
+    staleUntil: Date.now() + 2 * DAY,
+  });
+
 let userId = 0;
 
 beforeEach(() => {
@@ -85,6 +109,7 @@ beforeEach(() => {
       "INSERT INTO users (username, password_hash) VALUES ('listener', 'x') RETURNING id",
     )
     .get()!.id;
+  dbOps.invalidateDiscoveryCache(`user:${userId}`);
 });
 
 test("listening mixes rank Library tracks by when and how often they were played", async () => {
@@ -167,18 +192,47 @@ test("Daily Mixes group the most played artists by shared genre", async () => {
     ["Bicep", "Deep-House", 8],
     ["Coltrane", "jazz", 7],
     ["Davis", "jazz", 6],
+    ["Caribou", "Deep House", 5],
+    ["Monk", "jazz", 4],
+    ["Brubeck", "jazz", 3],
+    ["Kerri Chandler", "deep house", 30],
+    ["Mingus", "", 25],
   ] as const) {
-    const { tracks } = addArtist(name, 12, [genre]);
+    const { tracks } = addArtist(name, 12, genre ? [genre] : []);
     for (const track of tracks) play(String(track.id), track.title, name, plays, 5);
   }
+  addDiscoveryFeedback(userId, { action: "block_artist", artistName: "Brubeck" });
+  addArtist("Liked Jazz", 12, ["jazz"]);
+  db.prepare(
+    `INSERT INTO spotify_import_artists
+       (user_id, artist, plays, score, liked_tracks, followed, imported_at)
+     VALUES (?, 'Liked Jazz', 0, 3, 3, 0, ?)`,
+  ).run(userId, NOW);
+  const loners = Array.from({ length: 12 }, (_, index) => `Loner ${index}`);
+  for (const name of loners) {
+    const { tracks } = addArtist(name, 12, [`${name} genre`]);
+    for (const track of tracks) play(String(track.id), track.title, name, 20, 5);
+  }
+  dbOps.updateDiscoveryCache(
+    {
+      recommendations: [
+        ...loners.map((name) => ({ name: `${name} Friend`, sourceArtists: [name] })),
+        ...["Larry Heard", "Moodymann"].map((name) => ({
+          name,
+          sourceArtists: ["Kerri Chandler", "Mingus"],
+        })),
+      ],
+    },
+    `user:${userId}`,
+  );
 
   const daily = (await getUserMixes(userId, NOW)).filter((mix) => mix.id.startsWith("daily-"));
 
   assert.deepEqual(
     daily.map((mix) => [mix.name, mix.description]),
     [
-      ["Daily Mix 1", "Avalon and Bicep"],
-      ["Daily Mix 2", "Coltrane and Davis"],
+      ["Daily Mix 1", "Kerri Chandler, Avalon, Bicep and Caribou"],
+      ["Daily Mix 2", "Coltrane, Davis and Monk"],
     ],
   );
   const built = await getUserMixes(userId, NOW);
@@ -186,6 +240,133 @@ test("Daily Mixes group the most played artists by shared genre", async () => {
   assert.equal(await getUserMixes(userId, later), built);
   insertPlay.run(userId, "history:old", "Old Song", "Avalon", NOW - 90 * DAY);
   assert.notEqual(await getUserMixes(userId, later + 31 * 60_000), built);
+});
+
+test("Daily Mixes group artists AurralBrainz or Discover find similar, weigh this week, 90 days and all history equally, and skip weak or repeated mixes", async () => {
+  const french = ["Alpha Wann", "Josman", "Laylow", "Dinos"];
+  const american = ["Nas", "Pusha T", "Baby Keem", "Vince Staples"];
+  const house = ["Justice", "Modjo", "Cassius", "Air"];
+  const downtempo = ["Tycho", "Emancipator", "Four Tet", "Blockhead"];
+  for (const name of [...french, ...american]) addArtist(name, 6, ["hip hop"]);
+  for (const name of house) addArtist(name, 6, ["house"]);
+  for (const name of downtempo) addArtist(name, 6, ["downtempo"]);
+  for (const [name, plays, daysAgo] of [
+    ["Nekfeu", 2, 3],
+    ["Kendrick", 3, 30],
+    ["PNL", 4, 400],
+    ["Common", 1, 5],
+  ] as const) {
+    const { tracks } = addArtist(name, 12, ["hip hop"]);
+    for (const track of tracks) play(String(track.id), track.title, name, plays, daysAgo);
+  }
+  addArtist("Daft Punk", 12, ["house"]);
+  for (const [name, plays] of [
+    ["Bonobo", 1],
+    ["Ólafur Arnalds", 2],
+  ] as const) {
+    for (const track of addArtist(name, 12, ["downtempo"], mbidOf(name)).tracks) {
+      play(String(track.id), track.title, name, plays, 30);
+    }
+  }
+  await cacheSimilar("Bonobo", ["Ólafur Arnalds", ...downtempo]);
+  for (const [name, plays] of [
+    ["Lianne La Havas", 3],
+    ["Snoh Aalegra", 2],
+    ["SiR", 1],
+  ] as const) {
+    for (const track of addArtist(name, 12, ["r&b"], mbidOf(name)).tracks) {
+      play(String(track.id), track.title, name, plays, 3);
+    }
+  }
+  addArtist("Masego", 12, ["r&b"], mbidOf("Masego"));
+  await cacheSimilar("Lianne La Havas", ["Snoh Aalegra", "Masego"]);
+  await cacheSimilar("SiR", ["Snoh Aalegra", "Masego"]);
+  for (const [name, trackCount] of [
+    ["Pale Jay", 10],
+    ["Gotts Street Park", 11],
+  ] as const) {
+    for (const track of addArtist(name, trackCount, ["soul"], mbidOf(name)).tracks) {
+      play(String(track.id), track.title, name, 2, 3);
+    }
+  }
+  await cacheSimilar("Pale Jay", ["Gotts Street Park"]);
+  await cacheSimilar("Gotts Street Park", ["Pale Jay"]);
+  for (const name of ["Birdie", "Coltrane", "Davis", "Monk"]) {
+    for (const track of addArtist(name, 12, ["jazz"]).tracks) {
+      play(String(track.id), track.title, name, 1, 3);
+    }
+  }
+  db.prepare(
+    `INSERT INTO spotify_import_artists
+       (user_id, artist, plays, score, liked_tracks, followed, imported_at)
+     VALUES (?, 'Daft Punk', 2000, 2000, 0, 0, ?), (?, 'Not In Library', 100, 100, 0, 0, ?)`,
+  ).run(userId, NOW - 4 * 365 * DAY, userId, NOW);
+  const likedOnly = db.prepare(
+    `INSERT INTO spotify_import_artists
+       (user_id, artist, plays, score, liked_tracks, followed, imported_at)
+     VALUES (?, ?, 0, 3000, 3000, 0, ?)`,
+  );
+  for (let index = 0; index < 60; index += 1) likedOnly.run(userId, `Liked ${index}`, NOW);
+  const recommended = (names: string[], sourceArtists: string[]) =>
+    names.map((name) => ({ name, sourceArtists }));
+  dbOps.updateDiscoveryCache(
+    {
+      recommendations: [
+        ...recommended(["Damso", "Booba", "Vald", "SCH"], ["Nekfeu", "PNL", ...french.slice(0, 2)]),
+        ...recommended(["J. Cole", "JAY-Z", "Mac Miller"], ["Kendrick", "Common", ...american]),
+        ...recommended(["Drake"], ["Nekfeu", "Kendrick"]),
+        ...recommended(["Pharrell"], ["Daft Punk", "Kendrick"]),
+        ...recommended(["Kavinsky", "Stardust", "Breakbot"], ["Daft Punk", ...house]),
+        ...recommended(["LEDOUBLE", "Futurprince"], ["Birdie"]),
+      ],
+    },
+    `user:${userId}`,
+  );
+
+  const daily = (await getUserMixes(userId, NOW)).filter((mix) => mix.id.startsWith("daily-"));
+
+  assert.deepEqual(
+    daily.map((mix) => [mix.description, [...new Set(mix.trackIds.map(artistOf))].sort()]),
+    [
+      ["Lianne La Havas and Snoh Aalegra", ["Lianne La Havas", "Masego", "Snoh Aalegra"]],
+      ["Nekfeu and PNL", ["Alpha Wann", "Josman", "Nekfeu", "PNL"]],
+      ["Kendrick and Common", ["Common", "Kendrick", ...american].sort()],
+      ["Daft Punk", ["Daft Punk", ...house].sort()],
+      ["Bonobo and Ólafur Arnalds", ["Bonobo", "Ólafur Arnalds", ...downtempo].sort()],
+      ["Birdie, Coltrane, Davis and Monk", ["Birdie", "Coltrane", "Davis", "Monk"]],
+    ],
+  );
+});
+
+test("a Daily Mix reads every seed's similar artists and credits tracks on compilations to the artist it played", async () => {
+  const various = store.upsertLibraryArtist({
+    identityKey: "artist:Various",
+    name: "Various Artists",
+  });
+  const compilation = store.upsertLibraryAlbum({
+    identityKey: "album:Sampler",
+    artistId: various.id,
+    title: "Sampler",
+  });
+  const seeds = ["Khruangbin", "Men I Trust", "Mild High Club", "Hiatus Kaiyote"];
+  let trackNumber = 0;
+  for (const [rank, name] of seeds.entries()) {
+    for (const track of addArtist(name, 6, [], mbidOf(name)).tracks) {
+      play(String(track.id), track.title, name, 4 - rank, 3);
+      trackNumber += 1;
+      store.linkLibraryAlbumTrack({ albumId: compilation.id, trackId: track.id, trackNumber });
+    }
+  }
+  addArtist("Tame Impala", 6, [], mbidOf("Tame Impala"));
+  await cacheSimilar("Khruangbin", seeds.slice(1));
+  await cacheSimilar("Hiatus Kaiyote", ["Tame Impala"]);
+
+  const daily = (await getUserMixes(userId, NOW)).filter((mix) => mix.id.startsWith("daily-"));
+
+  assert.deepEqual(
+    daily.map((mix) => [...new Set(mix.trackIds.map(artistOf))].sort()),
+    [[...seeds, "Tame Impala"].sort()],
+  );
 });
 
 test("Blends mix two people's plays with their 3 closest listeners until either turns it off", async () => {

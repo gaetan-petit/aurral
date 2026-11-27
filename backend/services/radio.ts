@@ -4,7 +4,7 @@ import * as musicData from "./musicDataSource/index.ts";
 import { isSameArtist, matchesArtistKeys } from "../../lib/artistMatch.ts";
 import { getBlockedArtistKeys } from "./discovery/feedback.ts";
 import { getBlockedTagKeys, hasBlockedTag } from "./discovery/blockedTags.ts";
-import { discoverSimilarArtists } from "./discovery/discoverLinks.ts";
+import { discoverLinks } from "./discovery/discoverLinks.ts";
 
 export type RadioArtistRef = { id?: string | null; mbid?: string | null; name?: string | null };
 
@@ -24,6 +24,7 @@ type RadioOptions = {
   random?: () => number;
   now?: number;
   similarArtists?: (artist: RadioArtistRef) => Promise<SimilarArtist[]>;
+  fill?: boolean;
 };
 
 type ArtistRow = Pick<LibraryArtistsRow, "id" | "name" | "mbid">;
@@ -67,9 +68,9 @@ export function withDiscoverLinks(
   userId: number | null,
   source: NonNullable<RadioOptions["similarArtists"]> = defaultSimilarArtists,
 ) {
-  const linked = userId ? discoverSimilarArtists(userId) : null;
+  const linked = userId ? discoverLinks(userId) : null;
   return async (artist: RadioArtistRef) => [
-    ...(linked && artist.name ? linked(artist.name) : []),
+    ...(linked && artist.name ? linked.similarTo(artist.name) : []),
     ...(await withinBudget(source(artist), [] as SimilarArtist[])),
   ];
 }
@@ -86,7 +87,7 @@ async function withinBudget<T>(work: Promise<T>, fallback: T) {
   }
 }
 
-function resolveSeed(seed: RadioSeed) {
+function resolveSeed(seed: RadioSeed, fill: boolean) {
   const trackRefs = uniqueText(seed.trackIds);
   const albumRefs = uniqueText(seed.albumIds);
   const artistRefs = (seed.artists ?? []).filter(
@@ -148,6 +149,14 @@ function resolveSeed(seed: RadioSeed) {
   const trackIds = [...new Set(seedTracks.map((track) => track.trackId))];
   const albumIds = [...new Set([...seedTracks, ...seedAlbums].map((entry) => entry.albumId))];
   const requestedArtistIds = matchedArtists.map((artist) => artist.id);
+  const artists = artistIds.length
+    ? db
+        .prepare<number[], ArtistRow>(
+          `SELECT id, name, mbid FROM library_artists WHERE id IN (${placeholders(artistIds)})`,
+        )
+        .all(...artistIds)
+    : [];
+  if (!fill) return { artists, external, genres: [], trackIds };
   const genreRows = db
     .prepare<number[], { kind: string; id: number; genre: string }>(
       `SELECT entity_kind AS kind, entity_id AS id, genre_key AS genre FROM library_entity_genres
@@ -176,13 +185,6 @@ function resolveSeed(seed: RadioSeed) {
       ...[...requestedMain.values()].flatMap((main) => [...main]),
     ]),
   ];
-  const artists = artistIds.length
-    ? db
-        .prepare<number[], ArtistRow>(
-          `SELECT id, name, mbid FROM library_artists WHERE id IN (${placeholders(artistIds)})`,
-        )
-        .all(...artistIds)
-    : [];
 
   return { artists, external, genres, trackIds };
 }
@@ -192,9 +194,7 @@ async function similarArtistScores(
   similarArtists: NonNullable<RadioOptions["similarArtists"]>,
 ) {
   const lists = await Promise.all(
-    seeds
-      .slice(0, MAX_SIMILAR_SEEDS)
-      .map((seed) => withinBudget(similarArtists(seed), [] as SimilarArtist[])),
+    seeds.map((seed) => withinBudget(similarArtists(seed), [] as SimilarArtist[])),
   );
   const similar = lists.flat();
   const mbids = uniqueText(similar.map((artist) => artist.mbid));
@@ -529,7 +529,11 @@ function choose(
   return spreadArtists(picked);
 }
 
-export async function buildRadio({
+export async function buildRadio(options: RadioOptions) {
+  return (await radioPicks(options)).map((pick) => pick.trackId);
+}
+
+export async function radioPicks({
   userId,
   seed,
   exclude = [],
@@ -537,9 +541,10 @@ export async function buildRadio({
   random = Math.random,
   now = Date.now(),
   similarArtists = withDiscoverLinks(userId),
+  fill = true,
 }: RadioOptions) {
   const size = Math.max(1, Math.min(MAX_LIMIT, Math.floor(limit) || DEFAULT_LIMIT));
-  const resolved = resolveSeed(seed);
+  const resolved = resolveSeed(seed, fill);
   if (!resolved.artists.length && !resolved.external.length) return [];
   const seedArtistIds = new Set(resolved.artists.map((artist) => artist.id));
   const similarSeeds: RadioArtistRef[] = [
@@ -547,8 +552,11 @@ export async function buildRadio({
     ...resolved.external,
   ];
 
-  const scores = genreArtistScores(resolved.genres);
-  const similar = await similarArtistScores(similarSeeds, similarArtists);
+  const scores = fill ? genreArtistScores(resolved.genres) : new Map<number, number>();
+  const similar = await similarArtistScores(
+    fill ? similarSeeds.slice(0, MAX_SIMILAR_SEEDS) : similarSeeds,
+    similarArtists,
+  );
   for (const [artistId, score] of similar) {
     scores.set(artistId, Math.max(scores.get(artistId) ?? 0, score));
   }
@@ -574,7 +582,7 @@ export async function buildRadio({
     pool = fromSimilar;
     for (const artistId of genreOnly) scores.delete(artistId);
   }
-  if (!connected && pool.length < size * 2) {
+  if (!connected && fill && pool.length < size * 2) {
     const known = new Set(pool.map((candidate) => candidate.trackId));
     for (const candidate of fallbackTracks(size * 4, new Set([...blocked, ...genreOnly]))) {
       if (excluded.has(candidate.trackId) || known.has(candidate.trackId)) continue;
@@ -598,7 +606,5 @@ export async function buildRadio({
       (signals.recent.has(candidate.trackId) ? RECENT_PENALTY : 1)) /
     Math.sqrt(tracksPerArtist.get(candidate.artistId) ?? 1);
 
-  return choose(candidates, weightOf, seedArtistIds, size, random).map(
-    (candidate) => candidate.trackId,
-  );
+  return choose(candidates, weightOf, seedArtistIds, size, random);
 }

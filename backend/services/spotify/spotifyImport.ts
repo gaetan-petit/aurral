@@ -1,5 +1,10 @@
 import { db } from "../../config/db-sqlite.ts";
-import type { SpotifyImportArtist } from "../../../lib/spotifyExport.ts";
+import {
+  FOLLOWED_SCORE,
+  LIKED_TRACK_SCORE,
+  PLAY_HALF_LIFE_MS,
+  type SpotifyImportArtist,
+} from "../../../lib/spotifyExport.ts";
 import type { SpotifyImportArtistsRow } from "../../db/rows.ts";
 
 const deleteStmt = db.prepare<[number]>("DELETE FROM spotify_import_artists WHERE user_id = ?");
@@ -31,6 +36,19 @@ const summaryStmt = db.prepare<
 const topStmt = db.prepare<[number, number], Pick<SpotifyImportArtistsRow, "artist" | "score">>(
   "SELECT artist, score FROM spotify_import_artists WHERE user_id = ? ORDER BY score DESC LIMIT ?",
 );
+
+const playWeightsStmt = db.prepare<
+  [number, number, number, number, number, number],
+  { artist: string; weight: number }
+>(`
+  SELECT artist,
+         (score - liked_tracks * ? - followed * ?) * power(0.5, max(0, ? - imported_at) / ?) AS weight
+  FROM spotify_import_artists
+  WHERE user_id = ? ORDER BY weight DESC LIMIT ?
+`);
+
+export const getSpotifyImportPlayWeights = (userId: number, now: number, limit: number) =>
+  playWeightsStmt.all(LIKED_TRACK_SCORE, FOLLOWED_SCORE, now, PLAY_HALF_LIFE_MS, userId, limit);
 
 export const getSpotifyImportSummary = (userId: number) => {
   const row = summaryStmt.get(userId);
